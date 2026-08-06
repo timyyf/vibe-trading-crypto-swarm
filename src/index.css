@@ -1,0 +1,28 @@
+@import "tailwindcss";
+
+@layer base {
+  body {
+    background-color: #0a0b0d;
+    color: #d1d5db;
+    font-family: ui-sans-serif, system-ui, sans-serif;
+  }
+}
+
+/* Custom compact scrollbar for high density layout */
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+
+::-webkit-scrollbar-track {
+  background: #0a0b0d;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #24272c;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #374151;
+}

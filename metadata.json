@@ -1,0 +1,6 @@
+{
+  "name": "Vibe Trading Crypto Swarm AI",
+  "description": "Plataforma multi-agente de análise quantitativa e sinais de trading de criptomoedas com rastreamento de baleias e sinal com contagem regressiva.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
