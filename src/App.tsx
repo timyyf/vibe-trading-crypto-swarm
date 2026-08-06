@@ -50,6 +50,10 @@ export default function App() {
       if (simulateDegraded) query += `simulateDegraded=true&`;
 
       const res = await fetch(`/api/health?${query}`);
+      const contentType = res.headers.get('content-type') || '';
+      if (!res.ok || !contentType.includes('application/json')) {
+        throw new Error('Endpoint /api/health indisponível ou resposta não-JSON');
+      }
       const json = await res.json();
       if (json.success && json.data) {
         setSystemHealth(json.data);
@@ -95,6 +99,10 @@ export default function App() {
     setLoadingAssets(true);
     try {
       const res = await fetch('/api/crypto/top');
+      const contentType = res.headers.get('content-type') || '';
+      if (!res.ok || !contentType.includes('application/json')) {
+        throw new Error('Servidor indisponível ou resposta inválida');
+      }
       const json = await res.json();
       if (json.success && json.data.length > 0) {
         setAssets(json.data);
@@ -113,6 +121,10 @@ export default function App() {
     setLoadingKlines(true);
     try {
       const res = await fetch(`/api/crypto/klines?symbol=${symbol}&interval=${interval}&limit=40`);
+      const contentType = res.headers.get('content-type') || '';
+      if (!res.ok || !contentType.includes('application/json')) {
+        throw new Error('Servidor indisponível');
+      }
       const json = await res.json();
       if (json.success) {
         setKlines(json.data);
@@ -127,6 +139,10 @@ export default function App() {
   const fetchWhalesData = async (symbol: string) => {
     try {
       const res = await fetch(`/api/crypto/whales?symbol=${symbol}`);
+      const contentType = res.headers.get('content-type') || '';
+      if (!res.ok || !contentType.includes('application/json')) {
+        throw new Error('Servidor indisponível');
+      }
       const json = await res.json();
       if (json.success) {
         setWhaleTxs(json.data);
@@ -139,6 +155,10 @@ export default function App() {
   const fetchAlphaFactors = async () => {
     try {
       const res = await fetch('/api/crypto/alpha-factors');
+      const contentType = res.headers.get('content-type') || '';
+      if (!res.ok || !contentType.includes('application/json')) {
+        throw new Error('Servidor indisponível');
+      }
       const json = await res.json();
       if (json.success) {
         setAlphaFactors(json.data);
@@ -168,6 +188,11 @@ export default function App() {
           signalDurationMinutes: durationMinutes,
         }),
       });
+
+      const contentType = res.headers.get('content-type') || '';
+      if (!res.ok || !contentType.includes('application/json')) {
+        throw new Error('Servidor de IA indisponível ou resposta inesperada');
+      }
 
       const json = await res.json();
       if (json.success) {
