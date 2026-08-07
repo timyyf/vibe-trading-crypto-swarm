@@ -474,10 +474,22 @@ export const SwarmMeetingRoom: React.FC<SwarmMeetingRoomProps> = ({
                     <Users className="w-3.5 h-3.5 text-emerald-400" />
                     <span>Swarm Consensus Engine</span>
                   </div>
-                  {swarmResult.recommendedDurationMinutes !== undefined && (
-                    <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
-                      Janela: {isNeutral ? 0 : swarmResult.recommendedDurationMinutes}m
-                    </span>
+                  {swarmResult.recommendedDurationMinutes !== undefined && !isNeutral && (
+                    <div className="flex items-center gap-1">
+                      {swarmResult.recommendedDurationMinutes > swarmResult.signalDurationMinutes ? (
+                        <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 font-bold">
+                          Aumentado (+{swarmResult.recommendedDurationMinutes - swarmResult.signalDurationMinutes}m) → {swarmResult.recommendedDurationMinutes}m
+                        </span>
+                      ) : swarmResult.recommendedDurationMinutes < swarmResult.signalDurationMinutes ? (
+                        <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40 font-bold">
+                          Reduzido (-{swarmResult.signalDurationMinutes - swarmResult.recommendedDurationMinutes}m) → {swarmResult.recommendedDurationMinutes}m
+                        </span>
+                      ) : (
+                        <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-cyan-500/10 text-cyan-300 border border-cyan-500/30 font-bold">
+                          Ratificado: {swarmResult.recommendedDurationMinutes}m
+                        </span>
+                      )}
+                    </div>
                   )}
                 </div>
 
@@ -504,15 +516,24 @@ export const SwarmMeetingRoom: React.FC<SwarmMeetingRoomProps> = ({
 
                 {/* Justification of Dynamic Duration Window */}
                 {swarmResult.durationJustification && (
-                  <div className="mt-2 bg-[#0A0B0D] p-2 rounded border border-emerald-500/20 text-[10px] font-mono text-emerald-300 flex items-start gap-1.5">
-                    <Sparkles className="w-3.5 h-3.5 text-emerald-400 shrink-0 mt-0.5" />
-                    <div>
-                      <span className="font-bold text-white block">Parecer de Permanência Segura:</span>
-                      <span>
+                  <div className="mt-2 bg-[#0A0B0D] p-2.5 rounded border border-emerald-500/30 text-[10px] font-mono text-emerald-300 flex items-start gap-2 shadow-sm">
+                    <Sparkles className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2">
+                        <span className="font-bold text-white uppercase tracking-wider">
+                          Parecer do Comitê (Permanência Segura no Trade):
+                        </span>
+                        {!isNeutral && (
+                          <span className="text-[9px] px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-300 font-bold border border-emerald-500/40">
+                            {swarmResult.recommendedDurationMinutes || swarmResult.signalDurationMinutes} min
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-[#D1D5DB] leading-relaxed">
                         {isNeutral
                           ? 'Comitê definiu 0 minutos de permanência por considerar o mercado NEUTRO/AGUARDAR. Não é seguro abrir posições no momento.'
                           : swarmResult.durationJustification}
-                      </span>
+                      </p>
                     </div>
                   </div>
                 )}

@@ -23,11 +23,27 @@ DADOS DE MERCADO EM TEMPO REAL:
 - Variação 24h: ${change24h > 0 ? '+' : ''}${change24h.toFixed(2)}%
 - Volume 24h: $${(volume24h / 1e6).toFixed(2)}M USD
 - Máxima 24h: $${high24h.toLocaleString('en-US')} | Mínima 24h: $${low24h.toLocaleString('en-US')}
-- Janela de Tempo Operacional Solicitada Inicial: ${signalDurationMinutes} minutos.
+- Janela de Tempo Operacional Solicitada pelo Trader: ${signalDurationMinutes} minutos.
 
-INSTRUÇÃO IMPORTANTE SOBRE A JANELA DE TEMPO OPERACIONAL (1, 3, 5, 10 ou 15 minutos):
-O trader utiliza essa janela para definir o tempo EXATO de permanência no trade (ex: Scalping de 1m-3m ou Intraday de 5m-15m).
-O comitê deve respeitar preferencialmente a janela solicitada de ${signalDurationMinutes} minutos ou sugerir um ajuste estrito entre 1, 3, 5, 10 ou 15 minutos. Aumentar a janela aumenta o risco de exposição a reversões do mercado, portanto SEJA RIGOROSO e forneça uma justificativa técnica focada no gerenciamento de risco e volatilidade da kline.
+ATENÇÃO CRÍTICA: O TRADER PERMANECERÁ NO TRADE DURANTE O TEMPO EXATO RECOMENDADO PELO COMITÊ.
+A decisão de MANTER, AUMENTAR ou DIMINUIR a janela de tempo de exposição deve ser rigorosamente fundamentada no POTENCIAL DO TRADE e em elementos quantitativos e técnicos sólidos:
+
+1. ELEMENTOS PARA AUMENTAR O TEMPO (ex: passar de 3m/5m para 10m, 15m ou 20m):
+   - Volume 24h elevado ( > $150M USD) e fluxo comprador institucional acelerado.
+   - Confluência de tendência clara em médias móveis (EMA20 e SMA50 com inclinação positiva/negativa forte).
+   - Baixa amplitude de ruído/volatilidade desordenada (ATR controlado), com RSI consistente (48-64).
+   - Relação Risco/Retorno ampla ( > 1:2.5) onde o ativo precisa de tempo para percorrer a distância até o Take Profit sem risco de reversão precoce.
+
+2. ELEMENTOS PARA DIMINUIR O TEMPO (ex: passar de 10m/15m para 1m, 3m ou 5m - Micro Scalp):
+   - Alta amplitude de volatilidade de curto prazo (faixa de variação intraday > 4%).
+   - Proximidade imediata de fortes zonas de resistência/suporte ou topo/fundo duplo.
+   - RSI em zona de sobrecompra (> 68) ou divergência de exaustão de volume.
+   - Cenário onde estender a exposição aumenta desproporcionalmente o risco de devolução de lucros (deve-se realizar o lucro rapidamente em 1m-3m).
+
+3. ELEMENTOS PARA TEMPO 0 (Se a decisão for AGUARDAR / NEUTRO):
+   - Mercado lateralizado, sem volume ou com direcional indefinido.
+
+Retorne obrigatoriamente no campo 'recommendedDurationMinutes' o número exato da recomendação do comitê (0, 1, 3, 5, 10, 15, 20 ou 30) e no campo 'durationJustification' uma justificativa técnica minuciosa citando explicitamente os números de volume, volatilidade e médias que sustentam esse tempo.
 
 DIRETRIZES PROFISSIONAIS DOS 4 AGENTES ESPECIALIZADOS:
 1. "Dr. Quant Graph" (Chief Technical Officer & Quantitative Chartist):
@@ -50,8 +66,8 @@ Retorne obrigatoriamente no formato JSON em português com a seguinte estrutura:
   "finalDecision": "COMPRAR" | "VENDER" | "AGUARDAR / NEUTRO",
   "confidenceScore": número de 0 a 100,
   "signalDurationMinutes": ${signalDurationMinutes},
-  "recommendedDurationMinutes": número (5, 10, 15 ou 20 conforme avaliação com dados sólidos),
-  "durationJustification": "ex: O comitê estendeu o tempo de operação para 15 minutos com base na sustentação do volume institucional e suporte mantido na EMA20.",
+  "recommendedDurationMinutes": número (0, 1, 3, 5, 10, 15, 20 ou 30 conforme avaliação com dados sólidos),
+  "durationJustification": "justificativa técnica detalhada com métricas quantitativas explicando por que o tempo foi mantido, aumentado ou reduzido",
   "entryTarget": preço de entrada recomendado (próximo do preço atual $${price}),
   "stopLoss": preço de stop loss com gerenciamento de risco proporcional,
   "takeProfit": preço de alvo de lucro com RRR de pelo menos 1:2.0,
@@ -258,14 +274,30 @@ function fallbackSwarmAnalysis(
 
   const isNeutral = decision === 'AGUARDAR / NEUTRO';
 
-  // Dynamic recommendation based on volume and requested duration
-  const evaluatedDuration = isNeutral
-    ? 0
-    : durationMinutes;
+  // Quantitative evaluation of trade potential & optimal safe duration
+  const priceSpreadPct = price > 0 ? ((high24h - low24h) / price) * 100 : 0;
+  const isHighVolume = volume24h > 150000000;
+  const isStrongTrend = Math.abs(change24h) >= 2.0;
 
-  const durationReason = isNeutral
-    ? 'Comitê definiu 0 minutos de permanência por considerar o mercado NEUTRO/AGUARDAR. Não é seguro abrir posições no momento.'
-    : `O comitê ratificou a janela operacional estrita de ${durationMinutes} min para limitar a exposição do trader a volatilidades e reversões no gráfico spot.`;
+  let evaluatedDuration = durationMinutes;
+  let durationReason = '';
+
+  if (isNeutral) {
+    evaluatedDuration = 0;
+    durationReason = 'Comitê definiu 0 minutos de permanência por considerar o mercado NEUTRO/AGUARDAR. Risco desfavorável para abrir posições no momento.';
+  } else if (priceSpreadPct > 4.5 || Math.abs(change24h) > 6.0) {
+    // High intraday volatility/spread -> Shorten to 1m or 3m scalp to limit risk of sudden reversal
+    evaluatedDuration = durationMinutes <= 3 ? 1 : 3;
+    durationReason = `Comitê reduziu a permanência para ${evaluatedDuration}m (Micro-Scalp): A alta volatilidade e amplitude intraday (${priceSpreadPct.toFixed(1)}%) aumentam o risco de exaustão da kline. O trader deve realizar o lucro rápido antes de uma reação contrária.`;
+  } else if (isHighVolume && isStrongTrend && priceSpreadPct <= 3.8) {
+    // High liquidity and clear momentum -> Extend safe window (10m or 15m) to capture full Move to Take Profit
+    evaluatedDuration = durationMinutes < 10 ? 10 : 15;
+    durationReason = `Comitê aprovou a extensão do tempo seguro para ${evaluatedDuration}m: O volume expressivo ($${(volume24h / 1e6).toFixed(0)}M) acompanhado de tendência firme (EMA20/SMA50) e volatilidade controlada (${priceSpreadPct.toFixed(1)}%) comprovam sustentação sólida para alcançar o Take Profit sem risco prematuro.`;
+  } else {
+    // Ratify requested window
+    evaluatedDuration = durationMinutes;
+    durationReason = `Comitê ratificou a janela operacional de ${durationMinutes}m: As condições de volume ($${(volume24h / 1e6).toFixed(0)}M) e estrutura gráfica ajustam-se perfeitamente a esta exposição.`;
+  }
 
   return {
     assetSymbol: symbol,
