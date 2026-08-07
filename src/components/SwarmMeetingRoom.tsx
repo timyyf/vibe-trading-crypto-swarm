@@ -241,15 +241,16 @@ export const SwarmMeetingRoom: React.FC<SwarmMeetingRoomProps> = ({
             <Clock className="w-3.5 h-3.5 text-emerald-400" />
             <span className="text-[10px] font-mono uppercase text-[#9CA3AF]">Janela Base:</span>
             <div className="flex gap-1">
-              {[5, 10, 15, 20].map((mins) => (
+              {[1, 3, 5, 10, 15].map((mins) => (
                 <button
                   key={mins}
                   onClick={() => setDurationMinutes(mins)}
-                  className={`px-2.5 py-0.5 rounded text-[11px] font-mono font-bold uppercase transition-all ${
+                  className={`px-2 py-0.5 rounded text-[11px] font-mono font-bold uppercase transition-all ${
                     durationMinutes === mins
                       ? 'bg-emerald-500 text-slate-950'
                       : 'text-[#9CA3AF] hover:text-white hover:bg-[#121417]'
                   }`}
+                  title={mins <= 3 ? 'Scalp rápido (baixa exposição)' : 'Operação Intraday'}
                 >
                   {mins}m
                 </button>

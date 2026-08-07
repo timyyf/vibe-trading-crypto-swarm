@@ -25,8 +25,9 @@ DADOS DE MERCADO EM TEMPO REAL:
 - Máxima 24h: $${high24h.toLocaleString('en-US')} | Mínima 24h: $${low24h.toLocaleString('en-US')}
 - Janela de Tempo Operacional Solicitada Inicial: ${signalDurationMinutes} minutos.
 
-INSTRUÇÃO IMPORTANTE SOBRE A JANELA DE TEMPO OPERACIONAL (5, 10, 15 ou 20 minutos):
-Com base na volatilidade do ativo, profundidade do livro de ordens, suporte e sustentação do RSI/Volume, o comitê DEVE AVALIAR E DETERMINAR A JANELA DE TEMPO DE OPERAÇÃO MAIS SEGURA para esta entrada (escolha obrigatoriamente entre 5, 10, 15 ou 20 minutos). Apenas aumente para 10, 15 ou 20 minutos com base em informações sólidas de sustentação de tendência ou fluxo de volume. Forneça uma justificativa técnica detalhada para essa escolha.
+INSTRUÇÃO IMPORTANTE SOBRE A JANELA DE TEMPO OPERACIONAL (1, 3, 5, 10 ou 15 minutos):
+O trader utiliza essa janela para definir o tempo EXATO de permanência no trade (ex: Scalping de 1m-3m ou Intraday de 5m-15m).
+O comitê deve respeitar preferencialmente a janela solicitada de ${signalDurationMinutes} minutos ou sugerir um ajuste estrito entre 1, 3, 5, 10 ou 15 minutos. Aumentar a janela aumenta o risco de exposição a reversões do mercado, portanto SEJA RIGOROSO e forneça uma justificativa técnica focada no gerenciamento de risco e volatilidade da kline.
 
 DIRETRIZES PROFISSIONAIS DOS 4 AGENTES ESPECIALIZADOS:
 1. "Dr. Quant Graph" (Chief Technical Officer & Quantitative Chartist):
@@ -257,20 +258,14 @@ function fallbackSwarmAnalysis(
 
   const isNeutral = decision === 'AGUARDAR / NEUTRO';
 
-  // Dynamic recommendation based on volume and market momentum
+  // Dynamic recommendation based on volume and requested duration
   const evaluatedDuration = isNeutral
     ? 0
-    : volume24h > 500000000 && Math.abs(change24h) > 3
-    ? 15
-    : volume24h > 150000000
-    ? 10
     : durationMinutes;
 
   const durationReason = isNeutral
     ? 'Comitê definiu 0 minutos de permanência por considerar o mercado NEUTRO/AGUARDAR. Não é seguro abrir posições no momento.'
-    : evaluatedDuration > durationMinutes 
-    ? `Com base no alto volume de negociação ($${(volume24h/1e6).toFixed(0)}M) e sustentação de tendência na EMA20, o comitê estendeu a janela segura para ${evaluatedDuration} minutos.`
-    : `O comitê ratificou a janela padrão de ${durationMinutes} minutos com base na volatilidade atual do ativo.`;
+    : `O comitê ratificou a janela operacional estrita de ${durationMinutes} min para limitar a exposição do trader a volatilidades e reversões no gráfico spot.`;
 
   return {
     assetSymbol: symbol,
