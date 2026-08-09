@@ -1,6 +1,7 @@
-import { CryptoAsset, KlinePoint, WhaleTransaction, AlphaFactor } from '../types.js';
+import { CryptoAsset, KlinePoint, AlphaFactor } from '../types.js';
+import { calculateEMA, calculateSMA, calculateRSI } from './quantEngine.js';
 
-// Top 100 Initial Cryptocurrencies Seed with realistic pricing & volume
+// Metadata de símbolos para mapear pares Binance -> nome/categoria (não é cotação)
 const TOP_COINS_DATA: Omit<CryptoAsset, 'price' | 'change24h' | 'volume24h' | 'high24h' | 'low24h' | 'marketCap'>[] = [
   { id: 'bitcoin', symbol: 'BTC', name: 'Bitcoin', rank: 1, category: 'Layer 1' },
   { id: 'ethereum', symbol: 'ETH', name: 'Ethereum', rank: 2, category: 'Layer 1' },
@@ -104,97 +105,55 @@ const TOP_COINS_DATA: Omit<CryptoAsset, 'price' | 'change24h' | 'volume24h' | 'h
   { id: 'virtual-protocol', symbol: 'VIRTUAL', name: 'Virtuals Protocol', rank: 100, category: 'AI & Data' },
 ];
 
-// Base Prices reference (Updated accurate real-time market reference)
-const BASE_PRICES: Record<string, number> = {
-  BTC: 96450.00,
-  ETH: 2750.00,
-  SOL: 198.40,
-  USDT: 1.00,
-  XRP: 2.50,
-  BNB: 650.20,
-  DOGE: 0.265,
-  ADA: 0.78,
-  AVAX: 26.50,
-  LINK: 18.50,
-  SUI: 3.35,
-  PEPE: 0.0000098,
-  NEAR: 5.20,
-  SHIB: 0.0000175,
-  DOT: 6.80,
-  UNI: 9.50,
-  APT: 9.20,
-  FET: 1.25,
-  ARB: 0.65,
-  RENDER: 5.80,
-  LTC: 110.00,
-  TAO: 480.00,
-  OP: 1.85,
-  KAS: 0.14,
-  FTM: 0.72,
-  AAVE: 185.00,
-  FLOKI: 0.00018,
-  STX: 1.75,
-  SEI: 0.42,
-  FIL: 4.80,
-  GRT: 0.22,
-  POL: 0.48,
-  ATOM: 6.20,
-  WLD: 2.10,
-  PYTH: 0.38,
-  JUP: 0.95,
-  ONDO: 1.15,
-  LDO: 1.65,
-  TON: 5.40,
-  STRK: 0.45,
-  ENA: 0.58,
-  IMX: 1.45,
-  XMR: 165.00,
-  RUNE: 5.20,
-  ALGO: 0.22,
-  TIA: 5.10,
-};
+function mapBinancePair(pair: any, idx: number): CryptoAsset {
+  const rawSymbol = pair.symbol.replace('USDT', '');
+  const matchedSeed = TOP_COINS_DATA.find((c) => c.symbol === rawSymbol);
+  const price = parseFloat(pair.lastPrice);
+  const change24h = parseFloat(pair.priceChangePercent);
+  const volume24h = parseFloat(pair.quoteVolume);
+  const high24h = parseFloat(pair.highPrice);
+  const low24h = parseFloat(pair.lowPrice);
 
-// Try to fetch real live data with multi-provider failover
+  return {
+    id: matchedSeed ? matchedSeed.id : rawSymbol.toLowerCase(),
+    symbol: rawSymbol,
+    name: matchedSeed ? matchedSeed.name : `${rawSymbol} Protocol`,
+    price,
+    change24h,
+    volume24h,
+    high24h,
+    low24h,
+    marketCap: volume24h * 15.4,
+    rank: idx + 1,
+    category: matchedSeed ? matchedSeed.category : 'Outros',
+  };
+}
+
+async function fetchWithTimeout(url: string, timeoutMs: number): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { headers: { 'Accept': 'application/json' }, signal: controller.signal });
+    clearTimeout(timeout);
+    return res;
+  } catch (err) {
+    clearTimeout(timeout);
+    throw err;
+  }
+}
+
+// Top 100 por volume 24h — apenas provedores reais (Binance -> Vision -> CoinGecko).
+// Se todos falharem, retorna vazio (a UI mostra estado 'dados indisponíveis').
 export async function getTop100CryptoAssets(): Promise<CryptoAsset[]> {
   // Provider 1: Binance Spot Ticker
   try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 3500);
-    const res = await fetch('https://api.binance.com/api/v3/ticker/24hr', {
-      headers: { 'Accept': 'application/json' },
-      signal: controller.signal,
-    });
-    clearTimeout(timeout);
+    const res = await fetchWithTimeout('https://api.binance.com/api/v3/ticker/24hr', 3500);
     if (res.ok) {
       const data: any[] = await res.json();
       const usdtPairs = data.filter((d: any) => d.symbol.endsWith('USDT'));
       usdtPairs.sort((a, b) => parseFloat(b.quoteVolume) - parseFloat(a.quoteVolume));
       const topPairs = usdtPairs.slice(0, 100);
-
-      const assets: CryptoAsset[] = topPairs.map((pair, idx) => {
-        const rawSymbol = pair.symbol.replace('USDT', '');
-        const matchedSeed = TOP_COINS_DATA.find((c) => c.symbol === rawSymbol);
-        const price = parseFloat(pair.lastPrice);
-        const change24h = parseFloat(pair.priceChangePercent);
-        const volume24h = parseFloat(pair.quoteVolume);
-        const high24h = parseFloat(pair.highPrice);
-        const low24h = parseFloat(pair.lowPrice);
-
-        return {
-          id: matchedSeed ? matchedSeed.id : rawSymbol.toLowerCase(),
-          symbol: rawSymbol,
-          name: matchedSeed ? matchedSeed.name : `${rawSymbol} Protocol`,
-          price,
-          change24h,
-          volume24h,
-          high24h,
-          low24h,
-          marketCap: volume24h * 15.4,
-          rank: idx + 1,
-          category: matchedSeed ? matchedSeed.category : 'Outros',
-        };
-      });
-
+      const assets = topPairs.map(mapBinancePair);
       if (assets.length >= 20) return assets;
     }
   } catch (_err) {
@@ -203,43 +162,13 @@ export async function getTop100CryptoAssets(): Promise<CryptoAsset[]> {
 
   // Provider 2: Binance Vision Mirror
   try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 3500);
-    const res = await fetch('https://data-api.binance.vision/api/v3/ticker/24hr', {
-      headers: { 'Accept': 'application/json' },
-      signal: controller.signal,
-    });
-    clearTimeout(timeout);
+    const res = await fetchWithTimeout('https://data-api.binance.vision/api/v3/ticker/24hr', 3500);
     if (res.ok) {
       const data: any[] = await res.json();
       const usdtPairs = data.filter((d: any) => d.symbol.endsWith('USDT'));
       usdtPairs.sort((a, b) => parseFloat(b.quoteVolume) - parseFloat(a.quoteVolume));
       const topPairs = usdtPairs.slice(0, 100);
-
-      const assets: CryptoAsset[] = topPairs.map((pair, idx) => {
-        const rawSymbol = pair.symbol.replace('USDT', '');
-        const matchedSeed = TOP_COINS_DATA.find((c) => c.symbol === rawSymbol);
-        const price = parseFloat(pair.lastPrice);
-        const change24h = parseFloat(pair.priceChangePercent);
-        const volume24h = parseFloat(pair.quoteVolume);
-        const high24h = parseFloat(pair.highPrice);
-        const low24h = parseFloat(pair.lowPrice);
-
-        return {
-          id: matchedSeed ? matchedSeed.id : rawSymbol.toLowerCase(),
-          symbol: rawSymbol,
-          name: matchedSeed ? matchedSeed.name : `${rawSymbol} Protocol`,
-          price,
-          change24h,
-          volume24h,
-          high24h,
-          low24h,
-          marketCap: volume24h * 15.4,
-          rank: idx + 1,
-          category: matchedSeed ? matchedSeed.category : 'Outros',
-        };
-      });
-
+      const assets = topPairs.map(mapBinancePair);
       if (assets.length >= 20) return assets;
     }
   } catch (_err) {
@@ -248,13 +177,7 @@ export async function getTop100CryptoAssets(): Promise<CryptoAsset[]> {
 
   // Provider 3: CoinGecko Public Markets API
   try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 4000);
-    const res = await fetch('https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=100&page=1&sparkline=false', {
-      headers: { 'Accept': 'application/json' },
-      signal: controller.signal,
-    });
-    clearTimeout(timeout);
+    const res = await fetchWithTimeout('https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=100&page=1&sparkline=false', 4000);
     if (res.ok) {
       const data: any[] = await res.json();
       const assets: CryptoAsset[] = data.map((item, idx) => {
@@ -264,8 +187,8 @@ export async function getTop100CryptoAssets(): Promise<CryptoAsset[]> {
         const price = parseFloat(item.current_price || '0');
         const change24h = parseFloat(item.price_change_percentage_24h || '0');
         const volume24h = parseFloat(item.total_volume || '0');
-        const high24h = parseFloat(item.high_24h || (price * 1.03).toString());
-        const low24h = parseFloat(item.low_24h || (price * 0.97).toString());
+        const high24h = parseFloat(item.high_24h || price);
+        const low24h = parseFloat(item.low_24h || price);
 
         return {
           id: item.id || (matchedSeed ? matchedSeed.id : rawSymbol.toLowerCase()),
@@ -278,155 +201,67 @@ export async function getTop100CryptoAssets(): Promise<CryptoAsset[]> {
           low24h,
           marketCap: parseFloat(item.market_cap || (volume24h * 10).toString()),
           rank: idx + 1,
-          category: matchedSeed ? matchedSeed.category : 'Layer 1',
+          category: matchedSeed ? matchedSeed.category : 'Outros',
         };
       });
-
       if (assets.length >= 10) return assets;
     }
   } catch (_err) {
-    // proceed to fallback
+    // sem mais provedores — retorna vazio abaixo
   }
 
-  // Fallback market dataset with realistic pricing & micro-fluctuations (2s tick)
-  return generateFallbackTop100();
+  return [];
 }
 
-function generateFallbackTop100(): CryptoAsset[] {
-  const now = Date.now();
-  const tickTime = Math.floor(now / 2500); // 2.5s tick interval
-
-  const assets: CryptoAsset[] = TOP_COINS_DATA.map((coin, index) => {
-    const basePrice = BASE_PRICES[coin.symbol] || (50 / (index + 1));
-    const wave = Math.sin(index * 5 + tickTime * 0.3) * 0.0025 + Math.cos(index * 2 + tickTime * 0.1) * 0.0015;
-    const priceChange = Number(((Math.sin(index + tickTime / 100) * 3.8) + wave * 80).toFixed(2));
-    const currentPrice = Number((basePrice * (1 + wave)).toFixed(basePrice < 0.01 ? 7 : basePrice < 1 ? 4 : 2));
-    
-    const volume24h = Math.round((45000000000 / (index * 0.45 + 1)) * (1 + Math.abs(Math.sin(index)) * 0.3));
-    
-    return {
-      ...coin,
-      price: currentPrice,
-      change24h: priceChange,
-      volume24h,
-      high24h: Number((currentPrice * 1.035).toFixed(currentPrice < 0.01 ? 7 : 2)),
-      low24h: Number((currentPrice * 0.965).toFixed(currentPrice < 0.01 ? 7 : 2)),
-      marketCap: volume24h * (12 + (100 - index) * 0.8),
-    };
-  });
-
-  return assets.sort((a, b) => b.volume24h - a.volume24h).map((item, idx) => ({ ...item, rank: idx + 1 }));
-}
-
-// Fetch Klines (candlesticks) for technical charts
+// Klines reais da Binance com indicadores (EMA20, SMA50, RSI14) calculados sobre os dados reais.
+// Sem fallback sintético: se a Binance falhar, retorna [] e a UI mostra 'gráfico indisponível'.
 export async function getCryptoKlines(symbol: string, interval = '5m', limit = 40): Promise<KlinePoint[]> {
   const pair = symbol.endsWith('USDT') ? symbol : `${symbol}USDT`;
-  try {
-    const res = await fetch(`https://api.binance.com/api/v3/klines?symbol=${pair}&interval=${interval}&limit=${limit}`);
-    if (res.ok) {
-      const data: any[] = await res.json();
-      let cumulativeClose = 0;
-      return data.map((k: any, index: number) => {
-        const timeObj = new Date(k[0]);
-        const open = parseFloat(k[1]);
-        const high = parseFloat(k[2]);
-        const low = parseFloat(k[3]);
-        const close = parseFloat(k[4]);
-        const volume = parseFloat(k[5]);
 
-        cumulativeClose += close;
-        const sma50 = cumulativeClose / (index + 1);
+  const tryFetch = async (baseUrl: string): Promise<KlinePoint[] | null> => {
+    const res = await fetchWithTimeout(`https://${baseUrl}/api/v3/klines?symbol=${pair}&interval=${interval}&limit=${limit}`, 3500);
+    if (!res.ok) return null;
+    const data: any[] = await res.json();
+    if (!Array.isArray(data) || data.length === 0) return null;
 
-        return {
-          time: `${timeObj.getHours().toString().padStart(2, '0')}:${timeObj.getMinutes().toString().padStart(2, '0')}`,
-          timestamp: k[0],
-          open,
-          high,
-          low,
-          close,
-          volume,
-          ema20: Number((close * 0.997 + (open * 0.003)).toFixed(2)),
-          sma50: Number(sma50.toFixed(2)),
-          rsi: Number((45 + Math.sin(index) * 20).toFixed(1)),
-        };
-      });
-    }
-  } catch (err) {
-    console.warn(`Kline fetch failed for ${pair}, returning synthetic series:`, err);
-  }
+    const klines: KlinePoint[] = data.map((k: any) => ({
+      time: formatBinanceTime(k[0]),
+      timestamp: k[0],
+      open: parseFloat(k[1]),
+      high: parseFloat(k[2]),
+      low: parseFloat(k[3]),
+      close: parseFloat(k[4]),
+      volume: parseFloat(k[5]),
+    }));
 
-  // Synthetic fallback klines
-  const basePrice = BASE_PRICES[symbol] || 150;
-  const now = Date.now();
-  const klines: KlinePoint[] = [];
-  let currentPrice = basePrice;
+    const closes = klines.map((k) => k.close);
+    const ema20 = calculateEMA(closes, 20);
+    const sma50 = calculateSMA(closes, 50);
+    const rsi14 = calculateRSI(closes, 14);
 
-  let intervalStepMs = 5 * 60 * 1000;
-  if (interval === '15m') intervalStepMs = 15 * 60 * 1000;
-  if (interval === '1h') intervalStepMs = 60 * 60 * 1000;
+    return klines.map((k, idx) => ({
+      ...k,
+      ema20: Number(ema20.toFixed(2)),
+      sma50: Number(sma50.toFixed(2)),
+      rsi: Number(rsi14.toFixed(1)),
+    }));
+  };
 
-  for (let i = limit; i >= 0; i--) {
-    const timestamp = now - i * intervalStepMs;
-    const date = new Date(timestamp);
-    const delta = (Math.random() - 0.48) * (basePrice * 0.008);
-    const open = currentPrice;
-    const close = open + delta;
-    const high = Math.max(open, close) + Math.random() * (basePrice * 0.004);
-    const low = Math.min(open, close) - Math.random() * (basePrice * 0.004);
-    const volume = Math.round(Math.random() * 500000 + 100000);
+  const fromBinance = await tryFetch('api.binance.com');
+  if (fromBinance) return fromBinance;
+  const fromVision = await tryFetch('data-api.binance.vision');
+  if (fromVision) return fromVision;
 
-    currentPrice = close;
-
-    klines.push({
-      time: `${date.getHours().toString().padStart(2, '0')}:${date.getMinutes().toString().padStart(2, '0')}`,
-      timestamp,
-      open: Number(open.toFixed(2)),
-      high: Number(high.toFixed(2)),
-      low: Number(low.toFixed(2)),
-      close: Number(close.toFixed(2)),
-      volume,
-      ema20: Number((close * 0.998).toFixed(2)),
-      sma50: Number((close * 0.993).toFixed(2)),
-      rsi: Number((50 + Math.sin(i) * 25).toFixed(1)),
-    });
-  }
-
-  return klines;
+  return [];
 }
 
-// Generate Whale Transactions
-export function getWhaleTransactions(symbol: string): WhaleTransaction[] {
-  const basePrice = BASE_PRICES[symbol] || 120;
-  const now = Date.now();
-  
-  const types: WhaleTransaction['type'][] = ['EXCHANGE_INFLOW', 'EXCHANGE_OUTFLOW', 'WALLET_TRANSFER'];
-  const exchanges = ['Binance Cold Storage', 'Coinbase Custody', 'Kraken Hot Wallet', 'OKX Vault', 'Whale Address 0x7a...8e2', 'Whale Address 0x3f...11a'];
-
-  const txs: WhaleTransaction[] = [];
-  for (let i = 0; i < 8; i++) {
-    const amountCrypto = Math.round((Math.random() * 8000 + 150) * (symbol === 'BTC' ? 0.05 : 1));
-    const amountUSD = amountCrypto * basePrice;
-    const txType = types[Math.floor(Math.random() * types.length)];
-    const impact: WhaleTransaction['impactLevel'] = amountUSD > 10000000 ? 'ALTO' : amountUSD > 3000000 ? 'MÉDIO' : 'BAIXO';
-
-    txs.push({
-      id: `tx-${symbol}-${i}-${now}`,
-      timestamp: now - (i * 12 + Math.floor(Math.random() * 5)) * 60 * 1000,
-      symbol,
-      amountCrypto,
-      amountUSD,
-      from: exchanges[i % exchanges.length],
-      to: exchanges[(i + 3) % exchanges.length],
-      type: txType,
-      impactLevel: impact,
-      txHash: `0x${Math.random().toString(16).substring(2, 14)}...`,
-    });
-  }
-
-  return txs;
+function formatBinanceTime(timestampMs: string): string {
+  const timeObj = new Date(Number(timestampMs));
+  return `${timeObj.getHours().toString().padStart(2, '0')}:${timeObj.getMinutes().toString().padStart(2, '0')}`;
 }
 
-// Alpha Zoo Factors (Vibe-Trading library)
+// Alpha Zoo Factors (Vibe-Trading library) — valores ic/sharpe/winRate são REFERÊNCIA de literatura
+// (papers GTJA-191 / Alpha101). O valor atual do fator é calculado em tempo real via /api/crypto/hmm e /api/crypto/backtest.
 export const ALPHA_ZOO_FACTORS: AlphaFactor[] = [
   {
     id: 'gtja191_001',

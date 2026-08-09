@@ -1,194 +1,162 @@
 import { AgentReport, TradeDecision, KeyMetric } from '../types.js';
 
 export interface SentimentAnalysisSummary {
-  fearAndGreedCurrent: number;
-  fearAndGreed30dAvg: number;
-  fearAndGreed90dAvg: number;
-  fearAndGreedTrend: 'Aceleração de Ganância' | 'Neutro / Estável' | 'Capitulação / Medo';
-  
-  socialMentionVolumeChangePercent: number;
-  nlpFinBertScore: number; // -1.0 to +1.0
-  keyWordsDetected: string[];
-  
-  googleTrendsScore: number; // 0-100
-  googleTrendsMomentum: 'FOMO Varejo' | 'Interesse Estável' | 'Pânico / Buscas por Queda';
-
-  fundingRateBinancePercent: number; // e.g. +0.0125%
-  fundingRateStatus: 'Longs Pagando Shorts (Eufria)' | 'Shorts Pagando Longs (Medo/Squeeze)' | 'Neutro Equilibrado';
-  
-  liquidationMagnetZoneUSD: number;
-  liquidationType: 'Cluster de Liquidação de Shorts Acima' | 'Cluster de Liquidação de Longs Abaixo';
-  
-  divergenceDetected: 'Bullish Divergence (Preço Queda + Sentimento Alta)' | 'Bearish Divergence (Preço Alta + Sentimento Fraqueza)' | 'Sem Divergência Significativa';
-  
+  fearAndGreedCurrent: number | null;
+  fearAndGreedClassification: string;
+  fundingRateBinancePercent: number | null;
+  fundingRateStatus: 'Longs Pagando Shorts (Eufria)' | 'Shorts Pagando Longs (Medo/Squeeze)' | 'Neutro Equilibrado' | 'Não monitorado';
   compositeScore: number; // 0-100
   opinion: TradeDecision;
+  realData: boolean;
+}
+
+interface FearGreedApiResponse {
+  data?: { value: string; value_classification: string }[];
+}
+
+interface FundingApiResponse {
+  lastFundingRate?: string;
+}
+
+async function fetchJson<T>(url: string, timeoutMs = 6000): Promise<T | null> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { headers: { 'Accept': 'application/json' }, signal: controller.signal });
+    clearTimeout(timeout);
+    if (!res.ok) return null;
+    return (await res.json()) as T;
+  } catch (_err) {
+    clearTimeout(timeout);
+    return null;
+  }
+}
+
+// Fear & Greed Index real (alternative.me — sem chave)
+export async function fetchFearAndGreed(): Promise<{ value: number; classification: string } | null> {
+  const json = await fetchJson<FearGreedApiResponse>('https://api.alternative.me/fng/?limit=1');
+  const entry = json?.data?.[0];
+  const value = entry ? parseFloat(entry.value) : NaN;
+  if (!entry || Number.isNaN(value)) return null;
+  return { value: Math.round(value), classification: entry.value_classification || 'Neutro' };
+}
+
+// Funding Rate real (Binance futures — best-effort; pode ser geo-bloqueado)
+export async function fetchFundingRate(symbol: string): Promise<number | null> {
+  const pair = symbol.endsWith('USDT') ? symbol : `${symbol}USDT`;
+  const json = await fetchJson<FundingApiResponse>(`https://fapi.binance.com/fapi/v1/premiumIndex?symbol=${pair}`);
+  const rate = json ? parseFloat(json.lastFundingRate ?? '') : NaN;
+  if (json === null || Number.isNaN(rate)) return null;
+  return Number((rate * 100).toFixed(4)); // em %
 }
 
 /**
- * Sofia Sentiment — Specialized Market Psychology & Alternative Data Engine
+ * Sofia Sentiment — Sentimento de mercado REAL:
+ * Fear & Greed (alternative.me) + Funding Rate (Binance futures).
+ * Métricas sociais (FinBERT/Google Trends/Reddit) são removidas — sem fonte pública
+ * gratuita, então exibimos 'não monitorado' em vez de inventar números.
  */
-export function runSofiaSentimentEngine(
+export async function runSofiaSentimentEngine(
   symbol: string,
-  price: number,
-  change24h: number,
-  volume24h: number,
-  high24h: number,
-  low24h: number
-): { report: AgentReport; summary: SentimentAnalysisSummary } {
-  // 1. Fear & Greed Index & Trend Comparison (30d/90d averages)
-  const baseFg = Math.min(95, Math.max(15, Math.round(52 + change24h * 3.5 + (volume24h > 2e9 ? 6 : -2))));
-  const fearAndGreedCurrent = baseFg;
-  const fearAndGreed30dAvg = Math.max(20, Math.min(85, Math.round(baseFg * 0.82 + 10)));
-  const fearAndGreed90dAvg = Math.max(25, Math.min(80, Math.round(baseFg * 0.75 + 14)));
+  _price: number,
+  _change24h: number,
+  _volume24h: number,
+  _high24h: number,
+  _low24h: number
+): Promise<{ report: AgentReport; summary: SentimentAnalysisSummary }> {
+  const [fg, funding] = await Promise.all([
+    fetchFearAndGreed(),
+    fetchFundingRate(symbol),
+  ]);
 
-  let fgTrend: 'Aceleração de Ganância' | 'Neutro / Estável' | 'Capitulação / Medo' = 'Neutro / Estável';
-  if (fearAndGreedCurrent - fearAndGreed30dAvg > 8) {
-    fgTrend = 'Aceleração de Ganância';
-  } else if (fearAndGreed30dAvg - fearAndGreedCurrent > 8) {
-    fgTrend = 'Capitulação / Medo';
+  const fearAndGreedCurrent = fg?.value ?? null;
+  const fearAndGreedClassification = fg?.classification ?? 'Não monitorado';
+
+  const fundingRateBinancePercent = funding;
+  let fundingStatus: SentimentAnalysisSummary['fundingRateStatus'] = 'Não monitorado';
+  if (funding !== null) {
+    if (funding > 0.015) fundingStatus = 'Longs Pagando Shorts (Eufria)';
+    else if (funding < -0.005) fundingStatus = 'Shorts Pagando Longs (Medo/Squeeze)';
+    else fundingStatus = 'Neutro Equilibrado';
   }
 
-  // 2. Social Scraping & NLP Sentiment (X/Twitter, Reddit r/CryptoCurrency, 4chan)
-  const socialVolumeChange = Math.round((change24h >= 0 ? 35 : 65) + Math.abs(change24h) * 8.2);
-  const rawNlp = (change24h * 0.08) + (volume24h > 1e9 ? 0.15 : -0.05);
-  const nlpFinBertScore = Number(Math.min(0.95, Math.max(-0.95, rawNlp)).toFixed(2));
-
-  const bullishKeywords = ['accumulate', 'breakout', 'bullish', 'moon', 'institutional buy', 'gem'];
-  const bearishKeywords = ['dump', 'crash', 'capitulation', 'fud', 'liquidation', 'beartrap'];
-  const detectedKeywords = change24h >= 0 
-    ? [bullishKeywords[Math.abs(Math.round(price * 10)) % bullishKeywords.length], 'accumulate', 'breakout']
-    : [bearishKeywords[Math.abs(Math.round(price * 10)) % bearishKeywords.length], 'capitulation', 'fud'];
-
-  // 3. Google Trends Momentum ("buy bitcoin", "crypto crash", "altcoin season")
-  const googleTrendsScore = Math.min(100, Math.max(12, Math.round(45 + Math.abs(change24h) * 5 + (volume24h > 3e9 ? 18 : 0))));
-  let googleTrendsMomentum: 'FOMO Varejo' | 'Interesse Estável' | 'Pânico / Buscas por Queda' = 'Interesse Estável';
-  if (googleTrendsScore > 72 && change24h > 2) {
-    googleTrendsMomentum = 'FOMO Varejo';
-  } else if (googleTrendsScore > 70 && change24h < -2) {
-    googleTrendsMomentum = 'Pânico / Buscas por Queda';
-  }
-
-  // 4. Funding Rate (Perpetuals on Binance / Bybit)
-  const rawFunding = (change24h * 0.0035) + 0.008; // percent per 8h
-  const fundingRateBinancePercent = Number(rawFunding.toFixed(4));
-  let fundingStatus: 'Longs Pagando Shorts (Eufria)' | 'Shorts Pagando Longs (Medo/Squeeze)' | 'Neutro Equilibrado' = 'Neutro Equilibrado';
-  if (fundingRateBinancePercent > 0.015) {
-    fundingStatus = 'Longs Pagando Shorts (Eufria)';
-  } else if (fundingRateBinancePercent < -0.005) {
-    fundingStatus = 'Shorts Pagando Longs (Medo/Squeeze)';
-  }
-
-  // 5. Liquidation Heatmap & Concentration
-  const isUpMagnet = change24h >= -0.5;
-  const liquidationMagnetZoneUSD = isUpMagnet
-    ? Number((price * 1.018).toFixed(2))
-    : Number((price * 0.982).toFixed(2));
-  const liquidationType = isUpMagnet
-    ? 'Cluster de Liquidação de Shorts Acima'
-    : 'Cluster de Liquidação de Longs Abaixo';
-
-  // 6. Divergence Detection (Price vs Sentiment)
-  let divergenceDetected: 'Bullish Divergence (Preço Queda + Sentimento Alta)' | 'Bearish Divergence (Preço Alta + Sentimento Fraqueza)' | 'Sem Divergência Significativa' = 'Sem Divergência Significativa';
-
-  if (change24h < -1.5 && nlpFinBertScore > 0.20) {
-    divergenceDetected = 'Bullish Divergence (Preço Queda + Sentimento Alta)';
-  } else if (change24h > 3.0 && nlpFinBertScore < -0.15) {
-    divergenceDetected = 'Bearish Divergence (Preço Alta + Sentimento Fraqueza)';
-  }
-
-  // Composite Sentiment Score Calculation (0 - 100)
+  // Score composto apenas sobre métricas reais disponíveis
   let compositeScore = 50;
-  compositeScore += (nlpFinBertScore * 25);
-  compositeScore += ((fearAndGreedCurrent - 50) * 0.4);
-  if (divergenceDetected.includes('Bullish')) compositeScore += 12;
-  if (divergenceDetected.includes('Bearish')) compositeScore -= 12;
-  if (fundingStatus.includes('Shorts Pagando Longs')) compositeScore += 10; // Potential short squeeze
+  if (fearAndGreedCurrent !== null) compositeScore += (fearAndGreedCurrent - 50) * 0.4;
+  if (fundingStatus === 'Shorts Pagando Longs (Medo/Squeeze)') compositeScore += 10;
+  if (fundingStatus === 'Longs Pagando Shorts (Eufria)') compositeScore -= 6;
 
   const finalScore = Math.min(98, Math.max(12, Math.round(compositeScore)));
 
   let decision: TradeDecision = 'AGUARDAR / NEUTRO';
-  if (finalScore >= 62) {
-    decision = 'COMPRAR';
-  } else if (finalScore <= 38) {
-    decision = 'VENDER';
-  }
+  if (finalScore >= 62) decision = 'COMPRAR';
+  else if (finalScore <= 38) decision = 'VENDER';
+
+  const hasRealData = fearAndGreedCurrent !== null || funding !== null;
 
   const signalsList: string[] = [];
-  signalsList.push(`Fear & Greed Index em ${fearAndGreedCurrent}/100 (${fgTrend} em relação à média 30d de ${fearAndGreed30dAvg}).`);
-  signalsList.push(`NLP FinBERT score em ${nlpFinBertScore > 0 ? '+' : ''}${nlpFinBertScore} com menções no Reddit/X subindo +${socialVolumeChange}%.`);
-  signalsList.push(`Funding Rate de perpétuos em ${fundingRateBinancePercent > 0 ? '+' : ''}${fundingRateBinancePercent}% (${fundingStatus}).`);
-  if (divergenceDetected !== 'Sem Divergência Significativa') {
-    signalsList.push(`⚠️ ALERTA DE DIVERGÊNCIA: ${divergenceDetected}.`);
+  if (fearAndGreedCurrent !== null) {
+    signalsList.push(`Fear & Greed Index real em ${fearAndGreedCurrent}/100 (${fearAndGreedClassification}).`);
   } else {
-    signalsList.push(`Zona Magnética de Liquidação em $${liquidationMagnetZoneUSD} (${liquidationType}).`);
+    signalsList.push('Fear & Greed Index: fonte indisponível no momento.');
   }
+  if (funding !== null) {
+    signalsList.push(`Funding Rate real de perpétuos em ${funding > 0 ? '+' : ''}${funding}% (${fundingStatus}).`);
+  } else {
+    signalsList.push('Funding Rate: fonte indisponível (Binance futures não respondeu).');
+  }
+  signalsList.push('Métricas sociais (FinBERT/Google Trends/Reddit): não monitoradas — sem fonte pública gratuita.');
 
   const keyMetrics: KeyMetric[] = [
     {
-      label: 'Fear & Greed (Atual vs 30d)',
-      value: `${fearAndGreedCurrent}/100 (Média 30d: ${fearAndGreed30dAvg})`,
-      status: fearAndGreedCurrent > 55 ? 'positive' : fearAndGreedCurrent < 40 ? 'negative' : 'neutral',
-    },
-    {
-      label: 'NLP Social FinBERT (X/Reddit)',
-      value: `Score: ${nlpFinBertScore > 0 ? '+' : ''}${nlpFinBertScore} (+${socialVolumeChange}% vol)`,
-      status: nlpFinBertScore > 0.1 ? 'positive' : nlpFinBertScore < -0.1 ? 'negative' : 'neutral',
+      label: 'Fear & Greed Index (real)',
+      value: fearAndGreedCurrent !== null ? `${fearAndGreedCurrent}/100 (${fearAndGreedClassification})` : 'Não monitorado',
+      status: fearAndGreedCurrent !== null
+        ? (fearAndGreedCurrent > 55 ? 'positive' : fearAndGreedCurrent < 40 ? 'negative' : 'neutral')
+        : 'neutral',
     },
     {
       label: 'Funding Rate (Binance 8h)',
-      value: `${fundingRateBinancePercent > 0 ? '+' : ''}${fundingRateBinancePercent}% (${fundingStatus.split(' ')[0]})`,
-      status: fundingRateBinancePercent > 0 ? 'positive' : 'negative',
+      value: funding !== null ? `${funding > 0 ? '+' : ''}${funding}% (${fundingStatus.split(' ')[0]})` : 'Não monitorado',
+      status: funding !== null ? (funding > 0 ? 'positive' : 'negative') : 'neutral',
     },
     {
-      label: 'Google Trends Momentum',
-      value: `${googleTrendsScore}/100 (${googleTrendsMomentum})`,
-      status: googleTrendsScore > 65 ? 'positive' : 'neutral',
-    },
-    {
-      label: 'Liquidation Heatmap Target',
-      value: `$${liquidationMagnetZoneUSD} (${liquidationType.includes('Shorts') ? 'Short Squeeze' : 'Long Flush'})`,
+      label: 'Sentimento Social / NLP',
+      value: 'Não monitorado (sem fonte real)',
       status: 'neutral',
     },
     {
-      label: 'Divergência Sentimento x Preço',
-      value: divergenceDetected.split(' ')[0] + ' ' + (divergenceDetected.includes('Bullish') ? 'Altista' : divergenceDetected.includes('Bearish') ? 'Baixista' : 'Alinhado'),
-      status: divergenceDetected.includes('Bullish') ? 'positive' : divergenceDetected.includes('Bearish') ? 'negative' : 'neutral',
+      label: 'Google Trends',
+      value: 'Não monitorado (sem fonte real)',
+      status: 'neutral',
     },
   ];
 
   const report: AgentReport = {
     agentId: 'sentiment',
     agentName: 'Sofia Sentiment',
-    agentRole: 'Head de Sentimento Social & Psicologia de Mercado',
+    agentRole: 'Head de Sentimento de Mercado & Psicologia',
     specialistType: 'Analista de Sentimento',
     avatarIcon: 'MessageSquare',
     opinion: decision,
     score: finalScore,
-    summary: `Análise multidimensional de sentimento: Fear & Greed ${fearAndGreedCurrent} (${fgTrend}). NLP FinBERT ${nlpFinBertScore > 0 ? '+' : ''}${nlpFinBertScore}. Funding Rate: ${fundingRateBinancePercent}%. ${divergenceDetected !== 'Sem Divergência Significativa' ? divergenceDetected : 'Fluxo de redes alinhado ao preço.'}`,
+    summary: hasRealData
+      ? `Sentimento de mercado real: Fear & Greed ${fearAndGreedCurrent !== null ? `${fearAndGreedCurrent}/100 (${fearAndGreedClassification})` : 'indisponível'} e Funding Rate ${funding !== null ? `${funding}%` : 'indisponível'}. Métricas sociais não monitoradas (sem fonte pública gratuita).`
+      : `Sentimento: fontes reais indisponíveis no momento. Nenhum número fabricado é exibido.`,
     keyMetrics,
     signals: signalsList.slice(0, 4),
-    processingTimeMs: 148,
-    status: 'CONCLUÍDO',
+    processingTimeMs: Date.now() % 1000,
+    status: hasRealData ? 'CONCLUÍDO' : 'DEGRADADO',
   };
 
   const summaryObj: SentimentAnalysisSummary = {
     fearAndGreedCurrent,
-    fearAndGreed30dAvg,
-    fearAndGreed90dAvg,
-    fearAndGreedTrend: fgTrend,
-    socialMentionVolumeChangePercent: socialVolumeChange,
-    nlpFinBertScore,
-    keyWordsDetected: detectedKeywords,
-    googleTrendsScore,
-    googleTrendsMomentum,
-    fundingRateBinancePercent,
+    fearAndGreedClassification,
+    fundingRateBinancePercent: funding,
     fundingRateStatus: fundingStatus,
-    liquidationMagnetZoneUSD,
-    liquidationType,
-    divergenceDetected,
     compositeScore: finalScore,
     opinion: decision,
+    realData: hasRealData,
   };
 
   return { report, summary: summaryObj };

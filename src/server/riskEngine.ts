@@ -83,17 +83,30 @@ export function runRiskProtocolOfficerEngine(
 
   // 2. Fractional Kelly Criterion (0.5x Half-Kelly) Position Sizing
   // Kelly % = p - (1-p)/b where p = win rate, b = win/loss ratio
-  const winRateP = 0.61; // 61% estimated swarm win rate
+  // Win rate estimado de dados REAIS: proporção de períodos de alta nos klines recentes
+  let winRateP = 0.5;
+  if (klines && klines.length >= 3) {
+    const positivePeriods = klines.slice(1).filter((k, i) => k.close > klines[i].close).length;
+    winRateP = Math.max(0.3, Math.min(0.8, positivePeriods / (klines.length - 1)));
+  }
   const winLossRatioB = rrrRatio;
   const fullKellyFraction = winRateP - ((1 - winRateP) / winLossRatioB);
   const halfKellyPercent = Math.max(0.02, Math.min(0.18, (fullKellyFraction * 0.5)));
-  
+
   const fractionalKellyPositionSizePercent = Number((halfKellyPercent * 100).toFixed(1));
   const baseBankrollUSD = 10000;
   const recommendedCapitalAllocationUSD = Math.round(baseBankrollUSD * halfKellyPercent);
 
-  // 3. Value at Risk (VaR 95%) & Expected Shortfall (CVaR)
-  const realizedVol30d = Number(((Math.abs(change24h) * 0.008) + 0.024).toFixed(4));
+  // 3. Value at Risk (VaR 95%) & Expected Shortfall (CVaR) — volatilidade REAL dos klines
+  let realizedVol30d = 0.024;
+  if (klines && klines.length >= 5) {
+    let sumSqReturns = 0;
+    for (let i = 1; i < klines.length; i++) {
+      const r = klines[i - 1].close > 0 ? (klines[i].close - klines[i - 1].close) / klines[i - 1].close : 0;
+      sumSqReturns += r * r;
+    }
+    realizedVol30d = Math.sqrt(sumSqReturns / (klines.length - 1));
+  }
   const realizedVol30dPercent = Number((realizedVol30d * 100).toFixed(1));
 
   // Parametric VaR (95% confidence Z = 1.645)

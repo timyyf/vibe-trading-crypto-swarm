@@ -30,19 +30,6 @@ export interface KlinePoint {
   rsi?: number;
 }
 
-export interface WhaleTransaction {
-  id: string;
-  timestamp: number;
-  symbol: string;
-  amountCrypto: number;
-  amountUSD: number;
-  from: string;
-  to: string;
-  type: 'EXCHANGE_INFLOW' | 'EXCHANGE_OUTFLOW' | 'WALLET_TRANSFER';
-  impactLevel: 'ALTO' | 'MÉDIO' | 'BAIXO';
-  txHash: string;
-}
-
 export interface KeyMetric {
   label: string;
   value: string;
@@ -89,11 +76,14 @@ export interface AlphaFactor {
   name: string;
   category: 'Momentum' | 'Mean Reversion' | 'Volatilidade' | 'Volume Flow' | 'Machine Learning';
   formula: string;
-  ic: number; // Information Coefficient
-  sharpe: number;
-  winRate: number; // e.g. 64.5%
-  maxDrawdown: number; // e.g. -12.4%
+  ic: number; // Information Coefficient (referência de literatura)
+  sharpe: number; // referência de literatura
+  winRate: number; // referência de literatura (e.g. 64.5%)
+  maxDrawdown: number; // referência de literatura (e.g. -12.4%)
   description: string;
+  factorValue?: number; // valor atual calculado em tempo real
+  signalDirection?: 'LONG' | 'SHORT' | 'NEUTRO';
+  isReal?: boolean; // true = valor calculado em tempo real, false = referência de literatura
 }
 
 export interface TradeJournalEntry {
@@ -112,8 +102,10 @@ export interface TradeJournalEntry {
   notes: string;
 }
 
+export type AgentComponentId = 'market_feed' | 'gemini_llm' | 'technical' | 'sentiment' | 'orderbook' | 'whales' | 'alpha' | 'risk';
+
 export interface AgentDiagnostic {
-  id: 'market_feed' | 'gemini_llm' | 'technical' | 'sentiment' | 'whales' | 'alpha';
+  id: AgentComponentId;
   name: string;
   type: 'connector' | 'agent';
   status: 'ONLINE' | 'DEGRADED' | 'DISCONNECTED';
@@ -133,3 +125,90 @@ export interface SystemDiagnosticResult {
   warningMessage?: string;
 }
 
+// --- Deep Blue Alpha (on-chain whale aggregates, escopo Ethereum) ---
+
+export interface WhaleIndexPoint {
+  date: string; // ISO date
+  value: number; // 0-100 score
+  classification: string;
+}
+
+export interface WhaleIndexData {
+  current: number;
+  classification: string;
+  buyScore: number;
+  sellScore: number;
+  confidence: number;
+  history: WhaleIndexPoint[];
+  fetchedAt: number;
+}
+
+export interface TopWhaleToken {
+  symbol: string;
+  name: string;
+  trades: number;
+  volumeUsd: number;
+  netFlowUsd: number;
+  direction: 'ACUMULAÇÃO' | 'DISTRIBUIÇÃO' | 'NEUTRO';
+  wallets: number;
+}
+
+export interface WhaleOverviewStats {
+  trackedWallets: number;
+  activeWallets24h: number;
+  buyVolume24h: number;
+  sellVolume24h: number;
+  netFlow24h: number;
+  dexTrades24h: number;
+  exchangeFlows24h: number;
+  totalVolume24h: number;
+  latestBlock: number;
+}
+
+export interface WhaleOverview {
+  stats: WhaleOverviewStats;
+  index: WhaleIndexData;
+  topTokens: TopWhaleToken[];
+  source: string; // e.g. "Deep Blue Alpha"
+  scope: string; // e.g. "Ethereum on-chain"
+  fetchedAt: number;
+}
+
+// --- Alpha Zoo real-time computations ---
+
+export interface HmmRegimeResult {
+  symbol: string;
+  interval: string;
+  dominantRegime: 'MOMENTUM' | 'MEAN_REVERSION' | 'HIGH_VOLATILITY';
+  probabilities: {
+    momentum: number;
+    meanReversion: number;
+    highVolatility: number;
+  };
+  confidence: number;
+  stability: number;
+  regimeCount: number;
+  logLikelihood: number;
+  computedAt: number;
+  realData: boolean;
+}
+
+export interface BacktestResult {
+  symbol: string;
+  factorId: string;
+  factorName: string;
+  interval: string;
+  barsUsed: number;
+  netReturnPercent: number;
+  sharpeRatio: number;
+  winRatePercent: number;
+  maxDrawdownPercent: number;
+  profitFactor: number;
+  totalTrades: number;
+  longTrades: number;
+  shortTrades: number;
+  finalEquityCurve: number[];
+  feeRatePercent: number;
+  computedAt: number;
+  realData: boolean;
+}

@@ -8,7 +8,7 @@ import { AlphaZooPanel } from './components/AlphaZooPanel';
 import { TradeJournal } from './components/TradeJournal';
 import { SystemWarningToast } from './components/SystemWarningToast';
 import { SystemDiagnosticModal } from './components/SystemDiagnosticModal';
-import { CryptoAsset, KlinePoint, WhaleTransaction, SwarmAnalysisResult, TradeJournalEntry, AlphaFactor, SystemDiagnosticResult } from './types';
+import { CryptoAsset, KlinePoint, WhaleOverview, SwarmAnalysisResult, TradeJournalEntry, AlphaFactor, SystemDiagnosticResult } from './types';
 
 const DEFAULT_SEED_ASSETS: CryptoAsset[] = [
   { id: 'bitcoin', symbol: 'BTC', name: 'Bitcoin', price: 96450, change24h: 2.45, volume24h: 38500000000, high24h: 97800, low24h: 95100, marketCap: 1900000000000, rank: 1, category: 'Layer 1' },
@@ -29,7 +29,7 @@ export default function App() {
   
   const [chartTimeframe, setChartTimeframe] = useState<'5m' | '15m' | '1h'>('5m');
   const [klines, setKlines] = useState<KlinePoint[]>([]);
-  const [whaleTxs, setWhaleTxs] = useState<WhaleTransaction[]>([]);
+  const [whaleOverview, setWhaleOverview] = useState<WhaleOverview | null>(null);
   const [alphaFactors, setAlphaFactors] = useState<AlphaFactor[]>([]);
 
   const [swarmResult, setSwarmResult] = useState<SwarmAnalysisResult | null>(null);
@@ -168,10 +168,10 @@ export default function App() {
       }
       const json = await res.json();
       if (json.success) {
-        setWhaleTxs(json.data);
+        setWhaleOverview(json.data);
       }
     } catch (err) {
-      console.error('Failed to load whales:', err);
+      console.error('Failed to load whale overview:', err);
     }
   };
 
@@ -324,7 +324,7 @@ export default function App() {
             )}
 
             {activeTab === 'whales' && (
-              <WhaleRadar symbol={activeSymbol} transactions={whaleTxs} />
+              <WhaleRadar symbol={activeSymbol} overview={whaleOverview} />
             )}
 
             {activeTab === 'alpha' && (

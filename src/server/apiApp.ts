@@ -1,7 +1,9 @@
 import express from "express";
-import { getTop100CryptoAssets, getCryptoKlines, getWhaleTransactions, ALPHA_ZOO_FACTORS } from "./cryptoDataService.js";
+import { getTop100CryptoAssets, getCryptoKlines, ALPHA_ZOO_FACTORS } from "./cryptoDataService.js";
 import { analyzeCryptoWithSwarm } from "./geminiService.js";
 import { validateAndSanitizeSwarmResponse, runSwarmTestSuite } from "../lib/swarmValidator.js";
+import { getWhaleOverview } from "./whaleDataService.js";
+import { runHMMRegimeDetection, runBacktest } from "./quantEngine.js";
 
 const app = express();
 
@@ -60,23 +62,32 @@ app.get("/api/health", async (req, res) => {
     },
     {
       id: 'sentiment' as const,
-      name: 'Sofia Sentiment (Mídias & Redes)',
+      name: 'Sofia Sentiment (Fear & Greed + Funding Rate)',
       type: 'agent' as const,
       status: simulateDisconnectedAgent === 'sentiment' ? ('DISCONNECTED' as const) : (simulateDegraded ? ('DEGRADED' as const) : ('ONLINE' as const)),
       latencyMs: simulateDegraded ? 480 : 22,
       lastChecked: now,
       details: (simulateDisconnectedAgent === 'sentiment' || simulateDegraded)
-        ? 'Instabilidade na API de mídias sociais (Reddit/NewsFeed). Desempenho reduzido.'
-        : 'Monitoramento social r/CryptoCurrency & Fear/Greed sincronizado.',
+        ? 'Instabilidade na API alternativa.me / Binance Futures. Desempenho reduzido.'
+        : 'Fear & Greed Index (alternative.me) e Funding Rate (Binance Futures) monitorados.',
+    },
+    {
+      id: 'orderbook' as const,
+      name: 'OrderBook Sentinel (Liquidez & Depth L2)',
+      type: 'agent' as const,
+      status: simulateDisconnectedAgent === 'orderbook' ? ('DISCONNECTED' as const) : ('ONLINE' as const),
+      latencyMs: 22,
+      lastChecked: now,
+      details: 'Livro de ofertas L2 real da Binance (bids/asks, OBI, POC, CVD).',
     },
     {
       id: 'whales' as const,
-      name: 'Whale Tracker Apex (Fluxo On-Chain)',
+      name: 'Whale Tracker Apex (On-Chain Real)',
       type: 'agent' as const,
       status: simulateDisconnectedAgent === 'whales' ? ('DISCONNECTED' as const) : ('ONLINE' as const),
       latencyMs: 19,
       lastChecked: now,
-      details: 'Rastreamento de transações em bloco (> $100k) ativo.',
+      details: 'Agregados on-chain reais (Deep Blue Alpha): stats, whale index e top tokens.',
     },
     {
       id: 'alpha' as const,
@@ -85,7 +96,16 @@ app.get("/api/health", async (req, res) => {
       status: simulateDisconnectedAgent === 'alpha' ? ('DISCONNECTED' as const) : ('ONLINE' as const),
       latencyMs: 16,
       lastChecked: now,
-      details: 'Biblioteca de fatores GTJA-191 & Sharpe Ratio validada.',
+      details: 'Regime HMM real (Baum-Welch) e backtest walk-forward sobre klines reais.',
+    },
+    {
+      id: 'risk' as const,
+      name: 'Risk Protocol Officer (Kelly, VaR & Veto)',
+      type: 'agent' as const,
+      status: simulateDisconnectedAgent === 'risk' ? ('DISCONNECTED' as const) : ('ONLINE' as const),
+      latencyMs: 15,
+      lastChecked: now,
+      details: 'Half-Kelly, VaR 95% e CVaR calculados sobre volatilidade real dos klines.',
     },
   ];
 
@@ -146,21 +166,58 @@ app.get("/api/crypto/klines", async (req, res) => {
   }
 });
 
-// Whale Transactions
-app.get("/api/crypto/whales", (req, res) => {
+// Whale On-Chain Overview (agregados reais — Deep Blue Alpha)
+app.get("/api/crypto/whales", async (_req, res) => {
   try {
-    const symbol = (req.query.symbol as string) || "BTC";
-    const whales = getWhaleTransactions(symbol);
-    res.json({ success: true, symbol, data: whales });
+    const overview = await getWhaleOverview();
+    res.json({ success: true, data: overview });
   } catch (err) {
-    console.error("Error fetching whales:", err);
-    res.status(500).json({ success: false, error: "Falha ao rastrear carteiras de baleias" });
+    console.error("Error fetching whale overview:", err);
+    res.status(500).json({ success: false, error: "Falha ao carregar agregados on-chain de baleias" });
   }
 });
 
 // Alpha Zoo Factors
 app.get("/api/crypto/alpha-factors", (_req, res) => {
   res.json({ success: true, data: ALPHA_ZOO_FACTORS });
+});
+
+// Real-Time HMM Market Regime Detection (Baum-Welch sobre klines reais)
+app.get("/api/crypto/hmm", async (req, res) => {
+  try {
+    const symbol = (req.query.symbol as string) || "BTC";
+    const interval = (req.query.interval as string) || "15m";
+    const limit = parseInt((req.query.limit as string) || "80", 10);
+    const klines = await getCryptoKlines(symbol, interval, limit);
+    if (klines.length === 0) {
+      return res.status(503).json({ success: false, error: "Klines indisponíveis para detecção de regime HMM" });
+    }
+    const hmm = runHMMRegimeDetection(klines);
+    res.json({ success: true, symbol, interval, data: hmm });
+  } catch (err) {
+    console.error("Error running HMM regime detection:", err);
+    res.status(500).json({ success: false, error: "Falha na detecção de regime HMM" });
+  }
+});
+
+// Real-Time Walk-Forward Backtest por fator Alpha (sobre klines reais)
+app.get("/api/crypto/backtest", async (req, res) => {
+  try {
+    const symbol = (req.query.symbol as string) || "BTC";
+    const factorId = (req.query.factorId as string) || "gtja191_001";
+    const interval = (req.query.interval as string) || "15m";
+    const limit = parseInt((req.query.limit as string) || "80", 10);
+    const factor = ALPHA_ZOO_FACTORS.find((f) => f.id === factorId) || ALPHA_ZOO_FACTORS[0];
+    const klines = await getCryptoKlines(symbol, interval, limit);
+    if (klines.length === 0) {
+      return res.status(503).json({ success: false, error: "Klines indisponíveis para backtest" });
+    }
+    const backtest = runBacktest(klines, factor);
+    res.json({ success: true, symbol, interval, factorId: factor.id, data: backtest });
+  } catch (err) {
+    console.error("Error running backtest:", err);
+    res.status(500).json({ success: false, error: "Falha ao executar backtest" });
+  }
 });
 
 // Multi-Agent Swarm Analysis (Gemini Powered)

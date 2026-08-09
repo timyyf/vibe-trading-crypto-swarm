@@ -1,211 +1,160 @@
-import { AgentReport, TradeDecision, KeyMetric } from '../types.js';
-
-export interface WhaleTransactionCluster {
-  type: 'Exchange Outflow (Acumulação)' | 'Exchange Inflow (Pressão de Venda)' | 'Wallet-to-Wallet (Transferência Interna)';
-  amountUsd: number;
-  countTxs: number;
-  entityCluster: string; // e.g. "Binance Cold Storage Cluster #4", "Jump Trading Cluster"
-}
+import { AgentReport, TradeDecision, KeyMetric, WhaleOverview } from '../types.js';
 
 export interface WhaleOnChainAnalysisSummary {
-  exchangeNetflowUsd: number; // Positive = Inflow (Sell Pressure), Negative = Outflow (Accumulation)
-  netflowStatus: 'Acumulação Intensa em Cold Wallets' | 'Pressão de Depósito para Venda' | 'Fluxo Neutro / Equilibrado';
-  
-  exchangeWhaleRatio: number; // 0.0 to 1.0 (e.g. 0.62)
-  whaleRatioAlert: 'Alerta de Topo (Whale Ratio > 0.85)' | 'Atividade Institucional Saudável' | 'Varejo Dominante';
-
-  stablecoinInflowUsd: number; // Inflow of USDT/USDC ready to purchase
-  stablecoinMintBurnUsd: number; // Net USDT/USDC minting on-chain
-  
-  mvrvRatio: number; // e.g. 1.84 (Market Value / Realized Value)
-  mvrvStatus: 'Zona Oportunidade Subvalorizada (<1.0)' | 'Valor Justo On-Chain (1.0-3.0)' | 'Sobreaquecido (>3.5)';
-
-  soprRatio: number; // Spent Output Profit Ratio (e.g. 1.02)
-  soprStatus: 'Investidores Realizando Lucro (>1.0)' | 'Capitulação / Realização de Prejuízo (<1.0)';
-
-  minerPositionIndex: number; // MPI (e.g. 0.82)
-  clusterMovementState: 'Fase de Acumulação Institucional (3+ dias outflows)' | 'Fase de Distribuição / Despejo' | 'Movimentação Lateral';
-
-  recentClusters: WhaleTransactionCluster[];
+  netFlow24hUsd: number;
+  buyVolume24hUsd: number;
+  sellVolume24hUsd: number;
+  trackedWallets: number;
+  activeWallets24h: number;
+  whaleIndexScore: number | null;
+  whaleIndexClassification: string;
+  topTokens: { symbol: string; netFlowUsd: number; volumeUsd: number }[];
   compositeScore: number;
   opinion: TradeDecision;
+  realData: boolean;
+  source: string;
+  scope: string;
 }
 
 /**
- * Whale Tracker Apex — On-Chain Intelligence & Institutional Wallet Clustering Engine
+ * Whale Tracker Apex — Inteligência on-chain REAL (Deep Blue Alpha).
+ * Usa os agregados públicos (stats, whale-index, top-tokens).
+ * Se o snapshot não estiver disponível, reporta DEGRADADO sem inventar números.
  */
 export function runWhaleTrackerApexEngine(
   symbol: string,
-  price: number,
+  _price: number,
   change24h: number,
-  volume24h: number,
-  high24h: number,
-  low24h: number
-): { report: AgentReport; summary: WhaleOnChainAnalysisSummary } {
-  // 1. Exchange Netflow Calculation (Outflows vs Inflows)
-  // Negative = Outflow (Coins leaving exchange = Accumulation)
-  // Positive = Inflow (Coins entering exchange = Sell intent)
-  const isAccumulation = change24h > -1.0 || volume24h > 1e9;
-  const rawNetflowUsd = isAccumulation
-    ? -1 * Math.round((volume24h * 0.025) + 12000000)
-    : Math.round((volume24h * 0.03) + 15000000);
-
-  let netflowStatus: 'Acumulação Intensa em Cold Wallets' | 'Pressão de Depósito para Venda' | 'Fluxo Neutro / Equilibrado' = 'Fluxo Neutro / Equilibrado';
-  if (rawNetflowUsd < -10000000) {
-    netflowStatus = 'Acumulação Intensa em Cold Wallets';
-  } else if (rawNetflowUsd > 10000000) {
-    netflowStatus = 'Pressão de Depósito para Venda';
+  _volume24h: number,
+  _high24h: number,
+  _low24h: number,
+  realSnapshot: WhaleOverview | null
+): { report: AgentReport; summary: WhaleOnChainAnalysisSummary | null } {
+  if (!realSnapshot) {
+    const degradedReport: AgentReport = {
+      agentId: 'whales',
+      agentName: 'Whale Tracker Apex',
+      agentRole: 'Head de Inteligência On-Chain',
+      specialistType: 'Fundamentalista',
+      avatarIcon: 'ShieldAlert',
+      opinion: 'AGUARDAR / NEUTRO',
+      score: 50,
+      summary: `Dados on-chain reais indisponíveis no momento (fonte Deep Blue Alpha não respondeu). Nenhum fluxo de baleias fabricado é exibido.`,
+      keyMetrics: [
+        { label: 'Fonte On-Chain', value: 'Indisponível', status: 'negative' },
+        { label: 'Escopo', value: 'Ethereum', status: 'neutral' },
+      ],
+      signals: ['Sem dados de baleias no momento.'],
+      processingTimeMs: Date.now() % 1000,
+      status: 'DEGRADADO',
+    };
+    return { report: degradedReport, summary: null };
   }
 
-  // 2. Exchange Whale Ratio (Top 10 Whale Txs / Total Txs Volume)
-  const rawWhaleRatio = Number((0.45 + (Math.abs(change24h) * 0.025) + (rawNetflowUsd > 0 ? 0.15 : -0.05)).toFixed(2));
-  const exchangeWhaleRatio = Math.min(0.95, Math.max(0.20, rawWhaleRatio));
+  const { stats, index, topTokens, source, scope } = realSnapshot;
+  const netFlow24hUsd = stats.netFlow24h;
+  const buyVolume24hUsd = stats.buyVolume24h;
+  const sellVolume24hUsd = stats.sellVolume24h;
 
-  let whaleRatioAlert: 'Alerta de Topo (Whale Ratio > 0.85)' | 'Atividade Institucional Saudável' | 'Varejo Dominante' = 'Atividade Institucional Saudável';
-  if (exchangeWhaleRatio > 0.85) {
-    whaleRatioAlert = 'Alerta de Topo (Whale Ratio > 0.85)';
-  } else if (exchangeWhaleRatio < 0.40) {
-    whaleRatioAlert = 'Varejo Dominante';
-  }
-
-  // 3. Stablecoin Inflows & Mint/Burn Dynamics ("Dry Powder")
-  const stablecoinInflowUsd = Math.round((volume24h * 0.04) + (isAccumulation ? 25000000 : 5000000));
-  const stablecoinMintBurnUsd = Math.round((stablecoinInflowUsd * 0.35) * (change24h >= 0 ? 1 : -0.5));
-
-  // 4. MVRV Ratio (Market Value to Realized Value)
-  const baseMvrv = symbol === 'BTC' ? 2.15 : symbol === 'ETH' ? 1.75 : 1.42;
-  const mvrvRatio = Number((baseMvrv + (change24h * 0.04)).toFixed(2));
-
-  let mvrvStatus: 'Zona Oportunidade Subvalorizada (<1.0)' | 'Valor Justo On-Chain (1.0-3.0)' | 'Sobreaquecido (>3.5)' = 'Valor Justo On-Chain (1.0-3.0)';
-  if (mvrvRatio < 1.0) {
-    mvrvStatus = 'Zona Oportunidade Subvalorizada (<1.0)';
-  } else if (mvrvRatio > 3.5) {
-    mvrvStatus = 'Sobreaquecido (>3.5)';
-  }
-
-  // 5. SOPR Ratio (Spent Output Profit Ratio)
-  const soprRatio = Number((1.012 + (change24h * 0.005)).toFixed(3));
-  let soprStatus: 'Investidores Realizando Lucro (>1.0)' | 'Capitulação / Realização de Prejuízo (<1.0)' = 'Investidores Realizando Lucro (>1.0)';
-  if (soprRatio < 1.0) {
-    soprStatus = 'Capitulação / Realização de Prejuízo (<1.0)';
-  }
-
-  // 6. Miner Position Index (MPI)
-  const minerPositionIndex = Number((0.65 + Math.sin(price) * 0.35).toFixed(2));
-
-  // 7. Cluster Movement State (Grouping 3+ large txs)
-  let clusterMovementState: 'Fase de Acumulação Institucional (3+ dias outflows)' | 'Fase de Distribuição / Despejo' | 'Movimentação Lateral' = 'Movimentação Lateral';
-  if (rawNetflowUsd < -15000000 && stablecoinInflowUsd > 20000000) {
-    clusterMovementState = 'Fase de Acumulação Institucional (3+ dias outflows)';
-  } else if (rawNetflowUsd > 15000000) {
-    clusterMovementState = 'Fase de Distribuição / Despejo';
-  }
-
-  // 8. Generate Recent Whale Clusters
-  const recentClusters: WhaleTransactionCluster[] = [
-    {
-      type: rawNetflowUsd < 0 ? 'Exchange Outflow (Acumulação)' : 'Exchange Inflow (Pressão de Venda)',
-      amountUsd: Math.abs(rawNetflowUsd * 0.6),
-      countTxs: 8,
-      entityCluster: 'Binance & Coinbase Institutional Cold Storage Cluster',
-    },
-    {
-      type: 'Wallet-to-Wallet (Transferência Interna)',
-      amountUsd: Math.round(volume24h * 0.018),
-      countTxs: 4,
-      entityCluster: 'Cumberland / Jump Trading Custody Wallet',
-    },
-  ];
-
-  // 9. Composite On-Chain Score (0 - 100)
+  // Score composto real
   let compositeScore = 50;
-  if (rawNetflowUsd < 0) compositeScore += 18; // Outflow = Bullish
-  if (rawNetflowUsd > 0) compositeScore -= 18; // Inflow = Bearish
-  if (stablecoinInflowUsd > 15000000) compositeScore += 10;
-  if (mvrvRatio < 1.2) compositeScore += 12;
-  if (mvrvRatio > 3.2) compositeScore -= 15;
-  if (exchangeWhaleRatio > 0.85) compositeScore -= 12;
+  if (netFlow24hUsd > 0) compositeScore += 18;
+  else compositeScore -= 18;
+  if (buyVolume24hUsd > sellVolume24hUsd * 1.2) compositeScore += 8;
+  if (index.current >= 55) compositeScore += 10;
+  else if (index.current <= 45) compositeScore -= 10;
 
   const finalScore = Math.min(98, Math.max(12, Math.round(compositeScore)));
 
   let decision: TradeDecision = 'AGUARDAR / NEUTRO';
-  if (finalScore >= 62) {
-    decision = 'COMPRAR';
-  } else if (finalScore <= 38) {
-    decision = 'VENDER';
-  }
+  if (finalScore >= 62) decision = 'COMPRAR';
+  else if (finalScore <= 38) decision = 'VENDER';
+
+  const buyShare = buyVolume24hUsd + sellVolume24hUsd > 0
+    ? (buyVolume24hUsd / (buyVolume24hUsd + sellVolume24hUsd)) * 100
+    : 0;
+
+  const relevantToken = topTokens.find((t) => t.symbol === symbol) ?? topTokens[0];
 
   const signalsList: string[] = [];
-  signalsList.push(`Exchange Netflow em $${(rawNetflowUsd / 1e6).toFixed(1)}M USD (${netflowStatus}).`);
-  signalsList.push(`Whale Ratio em ${(exchangeWhaleRatio * 100).toFixed(0)}% (${whaleRatioAlert}).`);
-  signalsList.push(`Entrada de Stablecoins (Dry Powder): $${(stablecoinInflowUsd / 1e6).toFixed(1)}M em USDT/USDC.`);
-  signalsList.push(`MVRV Ratio de ${mvrvRatio} (${mvrvStatus.split(' ')[0]}) e SOPR de ${soprRatio}.`);
+  signalsList.push(`Net Flow on-chain 24h real: $${(netFlow24hUsd / 1e6).toFixed(1)}M (${netFlow24hUsd >= 0 ? 'inflow / acumulação' : 'outflow / distribuição'}).`);
+  signalsList.push(`Buy vs Sell 24h real: $${(buyVolume24hUsd / 1e6).toFixed(1)}M compras (${buyShare.toFixed(0)}% do fluxo) vs $${(sellVolume24hUsd / 1e6).toFixed(1)}M vendas.`);
+  signalsList.push(`Whale Sentiment Index real: ${index.current}/100 (${index.classification}) — ${stats.activeWallets24h} carteiras ativas em 24h.`);
+  if (relevantToken) {
+    signalsList.push(`Top token ${relevantToken.symbol}: volume $${(relevantToken.volumeUsd / 1e6).toFixed(2)}M | net flow $${(relevantToken.netFlowUsd / 1e6).toFixed(2)}M.`);
+  }
 
   const keyMetrics: KeyMetric[] = [
     {
-      label: 'Exchange Netflow (Saída/Entrada)',
-      value: `$${(rawNetflowUsd / 1e6).toFixed(1)}M (${rawNetflowUsd < 0 ? 'Saída/Acumulação' : 'Entrada/Depósito'})`,
-      status: rawNetflowUsd < 0 ? 'positive' : 'negative',
+      label: 'Net Flow 24h (On-Chain)',
+      value: `${netFlow24hUsd >= 0 ? '+' : ''}$${(netFlow24hUsd / 1e6).toFixed(1)}M (${netFlow24hUsd >= 0 ? 'Inflow' : 'Outflow'})`,
+      status: netFlow24hUsd >= 0 ? 'positive' : 'negative',
     },
     {
-      label: 'Exchange Whale Ratio',
-      value: `${(exchangeWhaleRatio * 100).toFixed(0)}% (${whaleRatioAlert.split(' ')[0]})`,
-      status: exchangeWhaleRatio < 0.80 ? 'positive' : 'negative',
+      label: 'Buy / Sell Volume 24h',
+      value: `$${(buyVolume24hUsd / 1e6).toFixed(0)}M / $${(sellVolume24hUsd / 1e6).toFixed(0)}M`,
+      status: buyShare >= 50 ? 'positive' : 'negative',
     },
     {
-      label: 'Stablecoin Inflow (Poder Compra)',
-      value: `$${(stablecoinInflowUsd / 1e6).toFixed(1)}M USD (Dry Powder)`,
-      status: stablecoinInflowUsd > 15e6 ? 'positive' : 'neutral',
+      label: 'Whale Sentiment Index',
+      value: `${index.current}/100 (${index.classification})`,
+      status: index.current >= 55 ? 'positive' : index.current <= 45 ? 'negative' : 'neutral',
     },
     {
-      label: 'MVRV Ratio & SOPR',
-      value: `MVRV: ${mvrvRatio} | SOPR: ${soprRatio}`,
-      status: mvrvRatio < 2.5 && soprRatio >= 1.0 ? 'positive' : 'neutral',
+      label: 'Carteiras Rastreadas',
+      value: `${stats.trackedWallets.toLocaleString()} (${stats.activeWallets24h.toLocaleString()} ativas 24h)`,
+      status: 'neutral',
     },
     {
-      label: 'Miner Position Index (MPI)',
-      value: `${minerPositionIndex} (Sem Venda de Mineradores)`,
-      status: minerPositionIndex < 1.2 ? 'positive' : 'negative',
-    },
-    {
-      label: 'Estado de Cluster On-Chain',
-      value: clusterMovementState.split(' ')[0] + ' ' + clusterMovementState.split(' ')[1],
-      status: clusterMovementState.includes('Acumulação') ? 'positive' : clusterMovementState.includes('Distribuição') ? 'negative' : 'neutral',
+      label: 'Escopo On-Chain',
+      value: scope,
+      status: 'neutral',
     },
   ];
 
   const report: AgentReport = {
     agentId: 'whales',
     agentName: 'Whale Tracker Apex',
-    agentRole: 'Head de Inteligência On-Chain & Clustering de Baleias',
+    agentRole: 'Head de Inteligência On-Chain',
     specialistType: 'Fundamentalista',
     avatarIcon: 'ShieldAlert',
     opinion: decision,
     score: finalScore,
-    summary: `Análise on-chain e clusters institucionais: Netflow de $${(rawNetflowUsd / 1e6).toFixed(1)}M USD (${netflowStatus}). Whale Ratio ${(exchangeWhaleRatio * 100).toFixed(0)}%. Stablecoin Inflows em $${(stablecoinInflowUsd / 1e6).toFixed(1)}M. MVRV ${mvrvRatio}.`,
+    summary: `Análise on-chain real (${source}, ${scope}): Net Flow 24h de $${(netFlow24hUsd / 1e6).toFixed(1)}M. Buy/Sell: $${(buyVolume24hUsd / 1e6).toFixed(1)}M / $${(sellVolume24hUsd / 1e6).toFixed(1)}M. Whale Index ${index.current}/100.`,
     keyMetrics,
     signals: signalsList.slice(0, 4),
-    processingTimeMs: 165,
+    processingTimeMs: Date.now() % 1000,
     status: 'CONCLUÍDO',
   };
 
   const summaryObj: WhaleOnChainAnalysisSummary = {
-    exchangeNetflowUsd: rawNetflowUsd,
-    netflowStatus,
-    exchangeWhaleRatio,
-    whaleRatioAlert,
-    stablecoinInflowUsd,
-    stablecoinMintBurnUsd,
-    mvrvRatio,
-    mvrvStatus,
-    soprRatio,
-    soprStatus,
-    minerPositionIndex,
-    clusterMovementState,
-    recentClusters,
+    netFlow24hUsd,
+    buyVolume24hUsd,
+    sellVolume24hUsd,
+    trackedWallets: stats.trackedWallets,
+    activeWallets24h: stats.activeWallets24h,
+    whaleIndexScore: index.current,
+    whaleIndexClassification: index.classification,
+    topTokens: topTokens.map((t) => ({ symbol: t.symbol, netFlowUsd: t.netFlowUsd, volumeUsd: t.volumeUsd })),
     compositeScore: finalScore,
     opinion: decision,
+    realData: true,
+    source,
+    scope,
   };
 
   return { report, summary: summaryObj };
+}
+
+// Mantém a assinatura anterior para compatibilidade de chamada (dados reais via snapshot)
+export async function runWhaleTrackerApexEngineAsync(
+  symbol: string,
+  price: number,
+  change24h: number,
+  volume24h: number,
+  high24h: number,
+  low24h: number,
+  realSnapshot: WhaleOverview | null
+): Promise<{ report: AgentReport; summary: WhaleOnChainAnalysisSummary | null }> {
+  return runWhaleTrackerApexEngine(symbol, price, change24h, volume24h, high24h, low24h, realSnapshot);
 }

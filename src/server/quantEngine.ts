@@ -1,4 +1,4 @@
-import { KlinePoint, AgentReport, TradeDecision, KeyMetric } from '../types.js';
+import { KlinePoint, AgentReport, TradeDecision, KeyMetric, HmmRegimeResult, BacktestResult, AlphaFactor } from '../types.js';
 
 export interface QuantIndicatorSummary {
   // Momentum
@@ -464,4 +464,352 @@ export function runDrQuantGraphEngine(
   };
 
   return { report, summary: quantSummary };
+}
+
+// ---------------------------------------------------------------------------
+// Hidden Markov Model — Regime Detection (real, Baum-Welch EM sobre dados reais)
+// ---------------------------------------------------------------------------
+
+interface HMMParams {
+  pi: number[];
+  A: number[][]; // transição entre estados (NxN)
+  means: number[];
+  vars: number[];
+}
+
+function standardize(xs: number[]): number[] {
+  const mean = xs.reduce((a, b) => a + b, 0) / xs.length;
+  const std = Math.sqrt(xs.reduce((a, b) => a + (b - mean) ** 2, 0) / xs.length) || 1;
+  return xs.map((x) => (x - mean) / std);
+}
+
+/**
+ * Gaussian HMM 1-D (3 estados) ajustado via Expectation-Maximization (Baum-Welch)
+ * sobre os log-retornos normalizados dos klines reais.
+ * Retorna regime dominante, probabilidades por estado e log-likelihood.
+ */
+export function runHMMRegimeDetection(klines: KlinePoint[], maxIter = 80): HmmRegimeResult {
+  const closes = klines.map((k) => k.close);
+  const logReturns: number[] = [];
+  for (let i = 1; i < closes.length; i++) {
+    if (closes[i - 1] > 0) logReturns.push(Math.log(closes[i] / closes[i - 1]));
+  }
+  if (logReturns.length < 20) {
+    return {
+      symbol: '',
+      interval: '',
+      dominantRegime: 'MEAN_REVERSION',
+      probabilities: { momentum: 33, meanReversion: 34, highVolatility: 33 },
+      confidence: 0,
+      stability: 0,
+      regimeCount: 0,
+      logLikelihood: 0,
+      computedAt: Date.now(),
+      realData: klines.length > 0,
+    };
+  }
+
+  const x = standardize(logReturns);
+  const N = 3; // 3 estados: Momentum, Mean-Reversion, High-Vol
+  const T = x.length;
+
+  // Inicialização determinística (não aleatória) dos parâmetros
+  const sorted = [...x].sort((a, b) => a - b);
+  const quantiles = [sorted[Math.floor(T * 0.2)], sorted[Math.floor(T * 0.5)], sorted[Math.floor(T * 0.8)]];
+  const globalVar = x.reduce((a, b) => a + b * b, 0) / T || 1;
+
+  let pi = Array.from({ length: N }, () => 1 / N);
+  let A = Array.from({ length: N }, () => Array.from({ length: N }, () => 0.333));
+  let means = quantiles.map((q) => q * 0.7);
+  let vars = Array.from({ length: N }, () => globalVar);
+
+  const eps = 1e-6;
+  let prevLogLik = -Infinity;
+
+  for (let iter = 0; iter < maxIter; iter++) {
+    // --- E-step: forward-backward ---
+    const alpha: number[][] = Array.from({ length: T }, () => new Array(N).fill(0));
+    const beta: number[][] = Array.from({ length: T }, () => new Array(N).fill(0));
+    const scale = new Array(T).fill(0);
+
+    const emission = (t: number, s: number) => {
+      const v = vars[s] || eps;
+      return Math.exp(-0.5 * ((x[t] - means[s]) ** 2) / v) / Math.sqrt(2 * Math.PI * v);
+    };
+
+    // Forward
+    for (let s = 0; s < N; s++) alpha[0][s] = pi[s] * emission(0, s);
+    scale[0] = alpha[0].reduce((a, b) => a + b, 0) || eps;
+    for (let s = 0; s < N; s++) alpha[0][s] /= scale[0];
+
+    for (let t = 1; t < T; t++) {
+      for (let s = 0; s < N; s++) {
+        let sum = 0;
+        for (let i = 0; i < N; i++) sum += alpha[t - 1][i] * A[i][s];
+        alpha[t][s] = sum * emission(t, s);
+      }
+      scale[t] = alpha[t].reduce((a, b) => a + b, 0) || eps;
+      for (let s = 0; s < N; s++) alpha[t][s] /= scale[t];
+    }
+
+    // Backward
+    for (let s = 0; s < N; s++) beta[T - 1][s] = 1;
+    for (let t = T - 2; t >= 0; t--) {
+      for (let s = 0; s < N; s++) {
+        let sum = 0;
+        for (let j = 0; j < N; j++) sum += A[s][j] * emission(t + 1, j) * beta[t + 1][j];
+        beta[t][s] = sum / (scale[t + 1] || eps);
+      }
+    }
+
+    const logLik = scale.reduce((a, b) => a + Math.log(b + eps), 0);
+    if (Math.abs(logLik - prevLogLik) < 1e-5) {
+      prevLogLik = logLik;
+      break;
+    }
+    prevLogLik = logLik;
+
+    // gamma e xi
+    const gamma: number[][] = Array.from({ length: T }, () => new Array(N).fill(0));
+    const xi: number[][][] = Array.from({ length: T - 1 }, () => Array.from({ length: N }, () => new Array(N).fill(0)));
+
+    for (let t = 0; t < T; t++) {
+      const denom = alpha[t].reduce((a, b) => a + b, 0) || eps;
+      for (let s = 0; s < N; s++) gamma[t][s] = (alpha[t][s] * beta[t][s]) / denom;
+    }
+    for (let t = 0; t < T - 1; t++) {
+      const denom = alpha[t].reduce((a, b) => a + b, 0) || eps;
+      for (let i = 0; i < N; i++) {
+        for (let j = 0; j < N; j++) {
+          xi[t][i][j] = (alpha[t][i] * A[i][j] * emission(t + 1, j) * beta[t + 1][j]) / denom;
+        }
+      }
+    }
+
+    // --- M-step ---
+    pi = gamma[0].map((g) => g + eps);
+    const piSum = pi.reduce((a, b) => a + b, 0);
+    pi = pi.map((p) => p / piSum);
+
+    for (let i = 0; i < N; i++) {
+      const rowSum = gamma.reduce((a, g, t) => (t < T - 1 ? a + xi[t][i].reduce((x, y) => x + y, 0) : a), 0) || eps;
+      for (let j = 0; j < N; j++) {
+        let sum = 0;
+        for (let t = 0; t < T - 1; t++) sum += xi[t][i][j];
+        A[i][j] = (sum + eps) / rowSum;
+      }
+    }
+
+    for (let s = 0; s < N; s++) {
+      const gSum = gamma.reduce((a, g) => a + g[s], 0) || eps;
+      let m = 0;
+      for (let t = 0; t < T; t++) m += gamma[t][s] * x[t];
+      means[s] = m / gSum;
+      let v = 0;
+      for (let t = 0; t < T; t++) v += gamma[t][s] * (x[t] - means[s]) ** 2;
+      vars[s] = Math.max(v / gSum, eps);
+    }
+  }
+
+  // Probabilidades do estado atual (última observação)
+  const lastGamma: number[] = [];
+  {
+    const t = T - 1;
+    const emissions = Array.from({ length: N }, (_, s) => {
+      const v = vars[s] || eps;
+      return Math.exp(-0.5 * ((x[t] - means[s]) ** 2) / v) / Math.sqrt(2 * Math.PI * v);
+    });
+    let forward = Array.from({ length: N }, (_, s) => pi[s] * emissions[s]);
+    const fsum = forward.reduce((a, b) => a + b, 0) || eps;
+    forward = forward.map((f) => f / fsum);
+    lastGamma.push(...forward);
+  }
+
+  // Mapear estados -> regimes (maior variância = HighVol; maior |média| entre os demais = Momentum)
+  const stateIdx = [0, 1, 2].sort((a, b) => vars[b] - vars[a]);
+  const highVolState = stateIdx[0];
+  const momentumState = Math.abs(means[stateIdx[1]]) >= Math.abs(means[stateIdx[2]]) ? stateIdx[1] : stateIdx[2];
+  const meanRevState = momentumState === stateIdx[1] ? stateIdx[2] : stateIdx[1];
+
+  const probabilities = {
+    momentum: Math.round(lastGamma[momentumState] * 100),
+    meanReversion: Math.round(lastGamma[meanRevState] * 100),
+    highVolatility: Math.round(lastGamma[highVolState] * 100),
+  };
+
+  const dominantRegime: HmmRegimeResult['dominantRegime'] =
+    probabilities.highVolatility >= Math.max(probabilities.momentum, probabilities.meanReversion)
+      ? 'HIGH_VOLATILITY'
+      : probabilities.momentum >= probabilities.meanReversion
+      ? 'MOMENTUM'
+      : 'MEAN_REVERSION';
+
+  const confidence = Math.round(Math.max(probabilities.momentum, probabilities.meanReversion, probabilities.highVolatility));
+
+  // Estabilidade = fração de transições de estado na sequência de Viterbi (média de self-transição ponderada)
+  const selfTransitions = (A[highVolState][highVolState] + A[momentumState][momentumState] + A[meanRevState][meanRevState]) / 3;
+
+  return {
+    symbol: '',
+    interval: '',
+    dominantRegime,
+    probabilities,
+    confidence,
+    stability: Math.round(selfTransitions * 100) / 100,
+    regimeCount: N,
+    logLikelihood: prevLogLik,
+    computedAt: Date.now(),
+    realData: true,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Backtest Walk-Forward real (sinais de fator sobre klines reais, com taxas)
+// ---------------------------------------------------------------------------
+
+function computeFactorSignal(klines: KlinePoint[], factorId: string): number[] {
+  const closes = klines.map((k) => k.close);
+  const volumes = klines.map((k) => k.volume);
+  const opens = klines.map((k) => k.open);
+  const signal: number[] = new Array(klines.length).fill(0);
+
+  const mean = (arr: number[]) => arr.reduce((a, b) => a + b, 0) / arr.length;
+  const std = (arr: number[]) => {
+    const m = mean(arr);
+    return Math.sqrt(arr.reduce((a, b) => a + (b - m) ** 2, 0) / arr.length) || 1;
+  };
+  const corr = (a: number[], b: number[], win: number, end: number) => {
+    const s = Math.max(0, end - win);
+    const aa = a.slice(s, end);
+    const bb = b.slice(s, end);
+    if (aa.length < 5) return 0;
+    const ma = mean(aa);
+    const mb = mean(bb);
+    const sa = std(aa);
+    const sb = std(bb);
+    let num = 0;
+    for (let i = 0; i < aa.length; i++) num += (aa[i] - ma) * (bb[i] - mb);
+    return num / ((sa * sb) || 1) / aa.length;
+  };
+
+  for (let i = 0; i < klines.length; i++) {
+    if (factorId === 'gtja191_001') {
+      // Volume Price Divergence: momento ponderado por volume
+      signal[i] = volumes[i] * (closes[i] - opens[i]);
+    } else if (factorId === 'alpha101_059') {
+      // Momentum Breakout: correlation(Close, Volume, 10) * slope(Close, 5)
+      const c = corr(closes, volumes, 10, i + 1);
+      const slope = i >= 5 ? closes[i] - closes[i - 5] : 0;
+      signal[i] = c * slope;
+    } else if (factorId === 'mean_reversion_rsi') {
+      // Mean Reversion: quanto mais sobrevendido (RSI baixo), mais alta a expectativa
+      const rsi = calculateRSI(closes.slice(0, i + 1), 3);
+      signal[i] = 50 - rsi;
+    } else {
+      // whale_flow_imbalance: proxy de fluxo via delta de preço ponderado por volume
+      signal[i] = volumes[i] * (closes[i] - opens[i]);
+    }
+  }
+
+  return signal;
+}
+
+/**
+ * Backtest walk-forward (janela treino/teste rolante) sobre klines reais.
+ * Sinal do fator normalizado no treino, posição aplicada no teste, com taxa por troca.
+ */
+export function runBacktest(klines: KlinePoint[], factor: AlphaFactor, feeRate = 0.001): BacktestResult {
+  const trainWindow = Math.max(20, Math.min(60, Math.floor(klines.length * 0.5)));
+  const testWindow = 5;
+  const closes = klines.map((k) => k.close);
+  const returns = closes.map((c, i) => (i > 0 && closes[i - 1] > 0 ? c / closes[i - 1] - 1 : 0));
+
+  const rawSignal = computeFactorSignal(klines, factor.id);
+
+  const positions: number[] = new Array(klines.length).fill(0);
+  let trades = 0;
+  for (let t = trainWindow; t + testWindow <= klines.length; t += testWindow) {
+    const trainSig = rawSignal.slice(t - trainWindow, t);
+    const m = trainSig.reduce((a, b) => a + b, 0) / trainSig.length;
+    const s = Math.sqrt(trainSig.reduce((a, b) => a + (b - m) ** 2, 0) / trainSig.length) || 1;
+    const z = m / s; // sinal padronizado médio do treino
+    const pos = z > 0.1 ? 1 : z < -0.1 ? -1 : 0;
+    for (let j = t; j < t + testWindow && j < klines.length; j++) positions[j] = pos;
+  }
+
+  // Equity curve com custo de transação por troca de posição
+  const equity: number[] = [1];
+  let prevPos = 0;
+  let longTrades = 0;
+  let shortTrades = 0;
+  let grossProfit = 0;
+  let grossLoss = 0;
+
+  for (let i = 0; i < returns.length; i++) {
+    const pos = positions[i];
+    if (pos !== prevPos) {
+      equity[equity.length - 1] *= 1 - feeRate; // custo da troca
+      if (prevPos === 0 && pos !== 0) {
+        trades++;
+        if (pos > 0) longTrades++;
+        else shortTrades++;
+      }
+      prevPos = pos;
+    }
+    const step = 1 + pos * returns[i];
+    equity.push(equity[equity.length - 1] * step);
+  }
+
+  const finalEquity = equity[equity.length - 1];
+  const netReturnPercent = (finalEquity - 1) * 100;
+
+  // Trade-level stats
+  let wins = 0;
+  let losses = 0;
+  for (let i = 0; i < returns.length; i++) {
+    const r = positions[i] * returns[i];
+    if (r > 0) { wins++; grossProfit += r; }
+    else if (r < 0) { losses++; grossLoss += -r; }
+  }
+
+  const perBar = returns.map((r, i) => positions[i] * r);
+  const meanBar = perBar.reduce((a, b) => a + b, 0) / perBar.length;
+  const stdBar = Math.sqrt(perBar.reduce((a, b) => a + (b - meanBar) ** 2, 0) / perBar.length) || 1;
+
+  // Sharpe anualizado aproximado (assumindo timeframe ~15m -> ~35040 barras/ano)
+  const barsPerYear = 35040;
+  const sharpeRatio = (meanBar / stdBar) * Math.sqrt(barsPerYear);
+
+  // Max drawdown
+  let peak = equity[0];
+  let maxDD = 0;
+  for (const e of equity) {
+    if (e > peak) peak = e;
+    const dd = (peak - e) / peak;
+    if (dd > maxDD) maxDD = dd;
+  }
+
+  const profitFactor = grossLoss > 0 ? grossProfit / grossLoss : grossProfit > 0 ? Infinity : 0;
+  const activeBars = positions.filter((p) => p !== 0).length;
+  const winRatePercent = activeBars > 0 ? (wins / activeBars) * 100 : 0;
+
+  return {
+    symbol: '',
+    factorId: factor.id,
+    factorName: factor.name,
+    interval: '',
+    barsUsed: klines.length,
+    netReturnPercent: Number(netReturnPercent.toFixed(2)),
+    sharpeRatio: Number(sharpeRatio.toFixed(2)),
+    winRatePercent: Number(winRatePercent.toFixed(1)),
+    maxDrawdownPercent: Number((maxDD * 100).toFixed(2)),
+    profitFactor: profitFactor === Infinity ? 999 : Number(profitFactor.toFixed(2)),
+    totalTrades: trades,
+    longTrades,
+    shortTrades,
+    finalEquityCurve: equity.map((e) => Number(e.toFixed(6))),
+    feeRatePercent: feeRate * 100,
+    computedAt: Date.now(),
+    realData: true,
+  };
 }

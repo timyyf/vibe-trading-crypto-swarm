@@ -7,6 +7,7 @@ import { runWhaleTrackerApexEngine } from "./whaleEngine.js";
 import { runAlphaZooEngine } from "./alphaZooEngine.js";
 import { runRiskProtocolOfficerEngine } from "./riskEngine.js";
 import { getCryptoKlines } from "./cryptoDataService.js";
+import { getWhaleOverview } from "./whaleDataService.js";
 
 export async function analyzeCryptoWithSwarm(
   symbol: string,
@@ -327,12 +328,13 @@ async function fallbackSwarmAnalysis(
 ): Promise<SwarmAnalysisResult> {
   const now = Date.now();
 
-  // Get real or synthetic klines & execute Specialized Engines
+  // Get real klines & execute Specialized Engines (dados reais, sem fabricação)
   const klines = await getCryptoKlines(symbol, '15m', 40);
   const drQuant = runDrQuantGraphEngine(symbol, price, change24h, volume24h, high24h, low24h, klines);
-  const sofiaSentiment = runSofiaSentimentEngine(symbol, price, change24h, volume24h, high24h, low24h);
-  const orderbookSentinel = runOrderBookSentinelEngine(symbol, price, change24h, volume24h, high24h, low24h, klines);
-  const whaleApex = runWhaleTrackerApexEngine(symbol, price, change24h, volume24h, high24h, low24h);
+  const sofiaSentiment = await runSofiaSentimentEngine(symbol, price, change24h, volume24h, high24h, low24h);
+  const orderbookSentinel = await runOrderBookSentinelEngine(symbol, price, change24h, volume24h, high24h, low24h, klines);
+  const whaleSnapshot = await getWhaleOverview();
+  const whaleApex = runWhaleTrackerApexEngine(symbol, price, change24h, volume24h, high24h, low24h, whaleSnapshot);
   const alphaZoo = runAlphaZooEngine(symbol, price, change24h, volume24h, high24h, low24h, klines);
 
   // Preliminary direction before Risk Audit
@@ -414,10 +416,10 @@ async function fallbackSwarmAnalysis(
     reasoningNotes: [
       `Quórum dos Especialistas: ${buyVotes} Compras | ${sellVotes} Vendas | Quórum Mínimo: 4/6 (${decision}).`,
       `Dr. Quant Graph: ${drQuant.summary.confluenceCount} sinais confluentes (${drQuant.summary.candlestickPattern}).`,
-      `Sofia Sentiment: Fear & Greed ${sofiaSentiment.summary.fearAndGreedCurrent}/100 | NLP FinBERT: ${sofiaSentiment.summary.nlpFinBertScore > 0 ? '+' : ''}${sofiaSentiment.summary.nlpFinBertScore}.`,
-      `OrderBook Sentinel: OBI L2 de ${orderbookSentinel.summary.orderBookImbalanceRatio > 0 ? '+' : ''}${orderbookSentinel.summary.orderBookImbalanceRatio} | Delta Vol $${(orderbookSentinel.summary.deltaVolumeNetUsd / 1e6).toFixed(1)}M | POC $${orderbookSentinel.summary.pocPriceUsd}.`,
-      `Whale Tracker Apex: Exchange Netflow $${(whaleApex.summary.exchangeNetflowUsd / 1e6).toFixed(1)}M | Whale Ratio ${(whaleApex.summary.exchangeWhaleRatio * 100).toFixed(0)}% | MVRV ${whaleApex.summary.mvrvRatio}.`,
-      `Alpha Zoo Engine: Regime HMM (${alphaZoo.summary.marketRegime.regimeType.split(' ')[0]}) | IC 5d +${alphaZoo.summary.avgInformationCoefficient5d} | Walk-Forward Win Rate ${alphaZoo.summary.walkForwardWinRate90d}% (Pós-Taxas).`,
+      `Sofia Sentiment: Fear & Greed ${sofiaSentiment.summary.fearAndGreedCurrent ?? 'n/d'}/100 | Funding Rate: ${sofiaSentiment.summary.fundingRateBinancePercent ?? 'n/d'}% (${sofiaSentiment.summary.fundingRateStatus}).`,
+      `OrderBook Sentinel: ${orderbookSentinel.summary ? `OBI L2 de ${orderbookSentinel.summary.orderBookImbalanceRatio > 0 ? '+' : ''}${orderbookSentinel.summary.orderBookImbalanceRatio} | Delta Vol $${(orderbookSentinel.summary.deltaVolumeNetUsd / 1e6).toFixed(1)}M | POC $${orderbookSentinel.summary.pocPriceUsd}.` : 'Book L2 indisponível (sem dados fabricados).'}`,
+      `Whale Tracker Apex: ${whaleApex.summary ? `Net Flow $${(whaleApex.summary.netFlow24hUsd / 1e6).toFixed(1)}M | Buy/Sell $${(whaleApex.summary.buyVolume24hUsd / 1e6).toFixed(1)}M / $${(whaleApex.summary.sellVolume24hUsd / 1e6).toFixed(1)}M | Whale Index ${whaleApex.summary.whaleIndexScore ?? 'n/d'}.` : 'Dados on-chain indisponíveis (sem dados fabricados).'}`,
+      `Alpha Zoo Engine: Regime HMM (${alphaZoo.summary.marketRegime.regimeType.split(' ')[0]}) | Backtest real Win Rate ${alphaZoo.summary.walkForwardWinRate90d}% (Pós-Taxas 0.10%).`,
       `Risk Protocol Officer: RRR 1:${riskOfficer.summary.riskRewardRatio} | Half-Kelly ${riskOfficer.summary.fractionalKellyPositionSizePercent}% ($${riskOfficer.summary.recommendedCapitalAllocationUSD}) | VaR 95% ${riskOfficer.summary.var95Percent}% | Veto Status: ${riskOfficer.summary.isVetoedByRiskOfficer ? '🛑 VETADO' : '✅ APROVADO'}.`,
     ],
     agents: allAgents,
