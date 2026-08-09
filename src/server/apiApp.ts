@@ -10,10 +10,25 @@ import { runWhaleTrackerApexEngine } from "./whaleEngine.js";
 import { runAlphaZooEngine } from "./alphaZooEngine.js";
 import { runRiskProtocolOfficerEngine } from "./riskEngine.js";
 import { AgentDiagnostic } from "../types.js";
+import { swarmBodySchema, swarmAnalyzeLimiter, swarmTestLimiter, SwarmBody } from "./swarmSchema.js";
 
 const app = express();
 
 app.use(express.json());
+
+// Validação do corpo das rotas de comitê via zod (400 com detalhes quando inválido).
+function validateSwarmBody(req: express.Request, res: express.Response, next: express.NextFunction) {
+  const parsed = swarmBodySchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({
+      success: false,
+      error: "Payload inválido",
+      details: parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`),
+    });
+  }
+  req.body = parsed.data;
+  next();
+}
 
 // --- API ROUTES ---
 
@@ -351,24 +366,19 @@ app.get("/api/crypto/backtest", async (req, res) => {
 });
 
 // Multi-Agent Swarm Analysis (Gemini Powered)
-app.post("/api/swarm/analyze", async (req, res) => {
+app.post("/api/swarm/analyze", swarmAnalyzeLimiter, validateSwarmBody, async (req, res) => {
   try {
-    const { symbol, name, price, change24h, volume24h, high24h, low24h, signalDurationMinutes } = req.body;
-    
-    if (!symbol || price === undefined) {
-      return res.status(400).json({ success: false, error: "Campos obrigatórios: symbol, price" });
-    }
+    const { symbol, name, price, change24h, volume24h, high24h, low24h, signalDurationMinutes } = req.body as SwarmBody;
 
-    const duration = parseInt(signalDurationMinutes || "5", 10);
     const result = await analyzeCryptoWithSwarm(
       symbol,
       name || symbol,
-      parseFloat(price),
-      parseFloat(change24h || "0"),
-      parseFloat(volume24h || "0"),
-      parseFloat(high24h || price),
-      parseFloat(low24h || price),
-      duration
+      price,
+      change24h ?? 0,
+      volume24h ?? 0,
+      high24h ?? price,
+      low24h ?? price,
+      signalDurationMinutes ?? 5
     );
 
     // Validate & Sanitize structure before sending to frontend
@@ -391,13 +401,9 @@ app.post("/api/swarm/analyze", async (req, res) => {
 });
 
 // Real-Time Specialist Agents Partial Results Streaming Endpoint (SSE)
-app.post("/api/swarm/stream", async (req, res) => {
+app.post("/api/swarm/stream", swarmAnalyzeLimiter, validateSwarmBody, async (req, res) => {
   try {
-    const { symbol, name, price, change24h, volume24h, high24h, low24h, signalDurationMinutes } = req.body;
-
-    if (!symbol || price === undefined) {
-      return res.status(400).json({ success: false, error: "Campos obrigatórios: symbol, price" });
-    }
+    const { symbol, name, price, change24h, volume24h, high24h, low24h, signalDurationMinutes } = req.body as SwarmBody;
 
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
@@ -406,12 +412,12 @@ app.post("/api/swarm/stream", async (req, res) => {
       (res as any).flushHeaders();
     }
 
-    const duration = parseInt(signalDurationMinutes || "5", 10);
-    const parsedPrice = parseFloat(price);
-    const parsedChange = parseFloat(change24h || "0");
-    const parsedVol = parseFloat(volume24h || "0");
-    const parsedHigh = parseFloat(high24h || price);
-    const parsedLow = parseFloat(low24h || price);
+    const duration = signalDurationMinutes ?? 5;
+    const parsedPrice = price;
+    const parsedChange = change24h ?? 0;
+    const parsedVol = volume24h ?? 0;
+    const parsedHigh = high24h ?? price;
+    const parsedLow = low24h ?? price;
 
     // 1. Emit INIT event
     res.write(`data: ${JSON.stringify({
@@ -480,7 +486,7 @@ app.post("/api/swarm/stream", async (req, res) => {
 });
 
 // Automated Unit Test Suite for /api/swarm/analyze Schema Validation
-app.get("/api/swarm/test", async (_req, res) => {
+app.get("/api/swarm/test", swarmTestLimiter, async (_req, res) => {
   try {
     const suiteResult = await runSwarmTestSuite(async (payload) => {
       const testResult = await analyzeCryptoWithSwarm(
