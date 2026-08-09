@@ -1,0 +1,5 @@
+# semantica==0.6.0 é instalado com --no-deps (stdlib-only: evita torch/transformers/spacy no free tier)
+semantica==0.6.0
+fastapi
+uvicorn
+psycopg[binary]  # opcional: só necessário se DATABASE_URL for configurado

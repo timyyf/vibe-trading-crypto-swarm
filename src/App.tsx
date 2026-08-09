@@ -6,6 +6,7 @@ import { TradingChart } from './components/TradingChart';
 import { WhaleRadar } from './components/WhaleRadar';
 import { AlphaZooPanel } from './components/AlphaZooPanel';
 import { TradeJournal } from './components/TradeJournal';
+import { KnowledgeGraphPanel } from './components/KnowledgeGraphPanel';
 import { SystemWarningToast } from './components/SystemWarningToast';
 import { SystemDiagnosticModal } from './components/SystemDiagnosticModal';
 import { CryptoAsset, KlinePoint, WhaleOverview, SwarmAnalysisResult, TradeJournalEntry, AlphaFactor, SystemDiagnosticResult } from './types';
@@ -414,6 +415,10 @@ export default function App() {
                 onRemoveEntry={handleRemoveJournalEntry}
                 onUpdateStatus={handleUpdateJournalStatus}
               />
+            )}
+
+            {activeTab === 'knowledge' && (
+              <KnowledgeGraphPanel activeSymbol={activeSymbol} />
             )}
           </>
         )}

@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: semantica-bridge
+    runtime: docker
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: SEMANTICA_KG_PATH
+        value: /app/kg.json

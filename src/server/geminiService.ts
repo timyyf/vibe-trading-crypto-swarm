@@ -18,7 +18,8 @@ export async function analyzeCryptoWithSwarm(
   volume24h: number,
   high24h: number,
   low24h: number,
-  signalDurationMinutes: number = 5
+  signalDurationMinutes: number = 5,
+  precedents?: string
 ): Promise<SwarmAnalysisResult> {
   const apiKey = process.env.GEMINI_API_KEY;
 
@@ -33,6 +34,11 @@ DADOS DE MERCADO EM TEMPO REAL:
 - Volume 24h: $${(volume24h / 1e6).toFixed(2)}M USD
 - Máxima 24h: $${high24h.toLocaleString('en-US')} | Mínima 24h: $${low24h.toLocaleString('en-US')}
 - Janela de Tempo Operacional Solicitada pelo Trader: ${signalDurationMinutes} minutos.
+${precedents ? `
+
+MEMÓRIA DE LONGO PRAZO (PRECEDENTES HISTÓRICOS DE DECISÕES ANTERIORES):
+${precedents}
+` : ''}
 
 DIRETRIZES DOS ESPECIALIZADOS DO COMITÊ:
 

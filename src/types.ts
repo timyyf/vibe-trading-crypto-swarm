@@ -103,7 +103,7 @@ export interface TradeJournalEntry {
   notes: string;
 }
 
-export type AgentComponentId = 'market_feed' | 'gemini_llm' | 'technical' | 'sentiment' | 'orderbook' | 'whales' | 'alpha' | 'risk';
+export type AgentComponentId = 'market_feed' | 'gemini_llm' | 'technical' | 'sentiment' | 'orderbook' | 'whales' | 'alpha' | 'risk' | 'semantica_kg';
 
 export interface AgentDiagnostic {
   id: AgentComponentId;

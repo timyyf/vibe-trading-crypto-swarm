@@ -12,6 +12,16 @@ import { runRiskProtocolOfficerEngine } from "./riskEngine.js";
 import { AgentDiagnostic } from "../types.js";
 import { swarmBodySchema, swarmAnalyzeLimiter, swarmTestLimiter, SwarmBody } from "./swarmSchema.js";
 import { ApiRequestLogEntry, buildDiagnostics } from "../lib/observability.js";
+import {
+  checkSemanticaHealth,
+  getPrecedents,
+  getDecisionChain,
+  listDecisions,
+  getGraphStats,
+  isSemanticaEnabled,
+  isPrecedentInjectionEnabled,
+  recordDecision,
+} from "./semanticaClient.js";
 
 const app = express();
 
@@ -82,9 +92,10 @@ async function probeWithDeadline<T>(
 // Real-time diagnostics: mede latência real de cada feed/agente (BTC como sonda).
 async function buildRealDiagnostics(now: number): Promise<AgentDiagnostic[]> {
   const hasGeminiKey = !!process.env.GEMINI_API_KEY;
+  const semanticaEnabled = isSemanticaEnabled();
 
   // Sondas externas rodam em PARALELO, cada uma com deadline de 1.5s.
-  const [feedRes, gemRes, klinesRes, sentimentRes, depthRes, whaleFeedRes] = await Promise.all([
+  const [feedRes, gemRes, klinesRes, sentimentRes, depthRes, whaleFeedRes, semanticaRes] = await Promise.all([
     probeWithDeadline(() => getTop100CryptoAssets()),
     probeWithDeadline(async () => {
       const controller = new AbortController();
@@ -104,6 +115,7 @@ async function buildRealDiagnostics(now: number): Promise<AgentDiagnostic[]> {
     probeWithDeadline(() => runSofiaSentimentEngine('BTC', 0, 0, 0, 0, 0)),
     probeWithDeadline(() => fetchRealDepth('BTC')),
     probeWithDeadline(() => getWhaleOverview()),
+    probeWithDeadline(() => checkSemanticaHealth()),
   ]);
 
   // Feed: OK quando retorna ativos; vazio = DEGRADED; timeout/falha = DEGRADED (deadline).
@@ -158,6 +170,11 @@ async function buildRealDiagnostics(now: number): Promise<AgentDiagnostic[]> {
 
   const sentimentLatency = sentimentRes.lat;
   const orderbookLatency = depthRes.lat;
+
+  const semanticaHealth = semanticaRes.ok && semanticaRes.value ? semanticaRes.value : null;
+  const semanticaHealthy = semanticaEnabled && !!semanticaHealth?.healthy;
+  const semanticaLatency = semanticaRes.lat;
+  const semanticaDecisionCount = semanticaHealth?.decisionCount ?? 0;
 
   const feedDetails = feedStatus === 'ONLINE'
     ? 'Feed de dados spot Binance sincronizado em tempo real.'
@@ -251,6 +268,19 @@ async function buildRealDiagnostics(now: number): Promise<AgentDiagnostic[]> {
       details: hasKlines
         ? `Half-Kelly, VaR 95% e CVaR calculados em ${riskLatency}ms sobre volatilidade real dos klines.`
         : 'Sem klines reais disponíveis para cálculo de risco.',
+    },
+    {
+      id: 'semantica_kg' as const,
+      name: 'Semantica Knowledge Graph (Memória de Longo Prazo)',
+      type: 'connector' as const,
+      status: semanticaHealthy ? ('ONLINE' as const) : ('DEGRADED' as const),
+      latencyMs: semanticaLatency,
+      lastChecked: now,
+      details: semanticaEnabled
+        ? (semanticaHealthy
+            ? `Sidecar respondendo em ${semanticaLatency}ms (${semanticaDecisionCount} decisões no grafo).`
+            : 'Sidecar inacessível — decisões serão perdidas (degradação graciosa).')
+        : 'SEMANTICA_BASE_URL não configurado — memória de longo prazo desativada.',
     },
   ];
 }
@@ -413,6 +443,19 @@ app.post("/api/swarm/analyze", swarmAnalyzeLimiter, validateSwarmBody, async (re
   try {
     const { symbol, name, price, change24h, volume24h, high24h, low24h, signalDurationMinutes } = req.body as SwarmBody;
 
+    let precedents: string | undefined;
+    if (isPrecedentInjectionEnabled()) {
+      const results = await getPrecedents(`Trade em ${symbol}`, 3);
+      if (results && results.length > 0) {
+        precedents = results
+          .map(
+            (r) =>
+              `- [${r.outcome} | conf ${Math.round((r.confidence ?? 0) * 100)}% | sim ${r.similarity ?? 0}] ${r.scenario}`
+          )
+          .join("\n");
+      }
+    }
+
     const result = await analyzeCryptoWithSwarm(
       symbol,
       name || symbol,
@@ -421,15 +464,29 @@ app.post("/api/swarm/analyze", swarmAnalyzeLimiter, validateSwarmBody, async (re
       volume24h ?? 0,
       high24h ?? price,
       low24h ?? price,
-      signalDurationMinutes ?? 5
+      signalDurationMinutes ?? 5,
+      precedents
     );
 
     // Validate & Sanitize structure before sending to frontend
     const validation = validateAndSanitizeSwarmResponse(result);
 
+    // Grava a decisão no grafo Semantica (fire-and-forget; não bloqueia a resposta)
+    let semanticaDecisionId: string | null = null;
+    if (validation.sanitized) {
+      const recorded = recordDecision(validation.sanitized).catch(() => null);
+      // Espera no máximo 250ms pelo id para incluí-lo na resposta quando gravado rápido.
+      semanticaDecisionId = await Promise.race([
+        recorded,
+        new Promise<string | null>((resolve) => setTimeout(() => resolve(null), 250)),
+      ]).then((id) => id ?? null);
+      if (semanticaDecisionId) console.log(`[semantica] decisão gravada: ${semanticaDecisionId}`);
+    }
+
     res.json({
       success: true,
       data: validation.sanitized,
+      semanticaDecisionId,
       _debugSchemaValidation: {
         valid: validation.valid,
         errorsCount: validation.errors.length,
@@ -474,6 +531,19 @@ app.post("/api/swarm/stream", swarmAnalyzeLimiter, validateSwarmBody, async (req
     })}\n\n`);
 
     // 2. Perform swarm analysis (Gemini or Fallback)
+    let precedents: string | undefined;
+    if (isPrecedentInjectionEnabled()) {
+      const results = await getPrecedents(`Trade em ${symbol}`, 3);
+      if (results && results.length > 0) {
+        precedents = results
+          .map(
+            (r) =>
+              `- [${r.outcome} | conf ${Math.round((r.confidence ?? 0) * 100)}% | sim ${r.similarity ?? 0}] ${r.scenario}`
+          )
+          .join("\n");
+      }
+    }
+
     const result = await analyzeCryptoWithSwarm(
       symbol,
       name || symbol,
@@ -482,11 +552,19 @@ app.post("/api/swarm/stream", swarmAnalyzeLimiter, validateSwarmBody, async (req
       parsedVol,
       parsedHigh,
       parsedLow,
-      duration
+      duration,
+      precedents
     );
 
     const validation = validateAndSanitizeSwarmResponse(result);
     const sanitizedResult = validation.sanitized;
+
+    // Grava a decisão no grafo Semantica (fire-and-forget; não bloqueia o streaming)
+    if (sanitizedResult) {
+      void recordDecision(sanitizedResult).then((decisionId) => {
+        if (decisionId) console.log(`[semantica] decisão gravada: ${decisionId}`);
+      }).catch(() => {});
+    }
 
     // 3. Stream each specialist agent's partial conclusion sequentially
     for (let i = 0; i < sanitizedResult.agents.length; i++) {
@@ -562,6 +640,53 @@ app.get("/api/diagnostics", (_req, res) => {
     success: true,
     ...buildDiagnostics(requestLog, Date.now(), windowMs, DIAGNOSTICS_START_TIME),
   });
+});
+
+// --- Semantica Knowledge Graph (sidecar via SEMANTICA_BASE_URL) ---
+
+// Status da integração (habilita a aba "knowledge" no frontend)
+app.get("/api/knowledge/status", async (_req, res) => {
+  const enabled = isSemanticaEnabled();
+  const health = await checkSemanticaHealth();
+  res.json({ success: true, enabled, health });
+});
+
+// Lista decisões gravadas (opcional: ?symbol= & limit=)
+app.get("/api/knowledge/decisions", async (req, res) => {
+  const symbol = (req.query.symbol as string) || undefined;
+  const limit = Math.min(parseInt((req.query.limit as string) || "50", 10) || 50, 500);
+  const data = await listDecisions(symbol, limit);
+  if (!data) return res.json({ success: false, disabled: true });
+  res.json({ success: true, data });
+});
+
+// Precedentes similares por símbolo (usado pelo painel e pela injeção de precedentes)
+app.get("/api/knowledge/precedents", async (req, res) => {
+  const symbol = (req.query.symbol as string) || "";
+  if (!symbol) {
+    return res.status(400).json({ success: false, error: "Parâmetro 'symbol' é obrigatório" });
+  }
+  const data = await getPrecedents(`Trade em ${symbol}`, 5);
+  if (!data) return res.json({ success: false, disabled: true });
+  res.json({ success: true, data });
+});
+
+// Proveniência: cadeia causal de uma decisão (?id=)
+app.get("/api/knowledge/provenance", async (req, res) => {
+  const id = (req.query.id as string) || "";
+  if (!id) {
+    return res.status(400).json({ success: false, error: "Parâmetro 'id' é obrigatório" });
+  }
+  const data = await getDecisionChain(id);
+  if (!data) return res.json({ success: false, disabled: true });
+  res.json({ success: true, data });
+});
+
+// Estatísticas agregadas do grafo (nós, arestas, categorias, outcomes)
+app.get("/api/knowledge/stats", async (_req, res) => {
+  const data = await getGraphStats();
+  if (!data) return res.json({ success: false, disabled: true });
+  res.json({ success: true, data });
 });
 
 export default app;

@@ -82,6 +82,47 @@ Acesse em `http://localhost:3000`.
 
 ---
 
+## 🧠 Semantica — Memória de Longo Prazo (Knowledge Graph)
+
+O comitê grava cada decisão em um grafo de conhecimento **Semantica** (sidecar Python)
+e consulta precedentes históricos, provenance (cadeia causal) e estatísticas pela aba
+**Knowledge** no app.
+
+### Arquitetura
+
+```
+[Netlify Functions - Node/Express]  SEMANTICA_BASE_URL=https://<name>.onrender.com
+      ▼  (fetch HTTPS server-side)
+[Render free — bridge FastAPI :8001]  ← único serviço (ContextGraph stdlib-only)
+```
+
+- A integração é **opcional**: sem `SEMANTICA_BASE_URL`, o app funciona 100% (degradação graciosa).
+- `recordDecision` roda fire-and-forget pós-análise (não adiciona latência ao `/api/swarm/*`).
+- `SEMANTICA_PRECEDENT_INJECTION=true` injeta 1-3 casos similares no prompt do comitê (default off).
+
+### Rodar o bridge local (sem Docker)
+
+```bash
+cd semantica
+python -m venv .venv
+.venv\Scripts\pip install --no-deps semantica==0.6.0 fastapi uvicorn
+.venv\Scripts\python bridge.py     # sobe em http://localhost:8001
+```
+
+> O `ContextGraph` é importado com um bypass de `__init__` (stdlib-only): a imagem do Render
+> fica enxuta sem numpy/scipy/torch/transformers. Deixe `DATABASE_URL` (Postgres free) definido
+> para a memória sobreviver ao cold start do Render.
+
+### Deploy no Render + Netlify
+
+1. **Render**: Web Service → repo → Dockerfile root `semantica/` → plano `free` → health check `/health`.
+2. Variáveis no Render: `DATABASE_URL` (opcional, secreta) e `SEMANTICA_KG_PATH=/app/kg.json`.
+3. **Netlify** (painel): `SEMANTICA_BASE_URL=https://<name>.onrender.com`,
+   `SEMANTICA_ENABLED=true`, `SEMANTICA_PRECEDENT_INJECTION=false`.
+4. Confira em produção: `GET /api/knowledge/status` → `{"enabled": true}`.
+
+---
+
 ## 📜 Licença
 
 Projeto sob licença MIT. Desenvolvido por **Thiago Diniz**.

@@ -1,5 +1,5 @@
 import React from 'react';
-import { TrendingUp, Users, ShieldAlert, Cpu, BookOpen, Flame, Clock, Bell, BellOff } from 'lucide-react';
+import { TrendingUp, Users, ShieldAlert, Cpu, BookOpen, Flame, Clock, Bell, BellOff, BrainCircuit } from 'lucide-react';
 import { SystemDiagnosticResult } from '../types';
 
 interface HeaderProps {
@@ -125,6 +125,18 @@ export const Header: React.FC<HeaderProps> = ({
             <BookOpen className="w-3.5 h-3.5 text-blue-400" />
             <span>Diário</span>
           </button>
+
+          <button
+            onClick={() => setActiveTab('knowledge')}
+            className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-[11px] font-mono font-semibold uppercase tracking-wider transition-all ${
+              activeTab === 'knowledge'
+                ? 'bg-[#1C1F24] text-emerald-400 border border-[#374151]'
+                : 'text-[#9CA3AF] hover:text-white hover:bg-[#121417]'
+            }`}
+          >
+            <BrainCircuit className="w-3.5 h-3.5 text-violet-400" />
+            <span>Knowledge</span>
+          </button>
         </nav>
 
         {/* Right Status */}
@@ -227,6 +239,15 @@ export const Header: React.FC<HeaderProps> = ({
         >
           <Cpu className="w-3 h-3 text-indigo-400" />
           <span>Alpha</span>
+        </button>
+        <button
+          onClick={() => setActiveTab('knowledge')}
+          className={`flex items-center gap-1 whitespace-nowrap px-2.5 py-1 rounded text-[10px] font-mono uppercase ${
+            activeTab === 'knowledge' ? 'bg-[#1C1F24] text-emerald-400 border border-[#374151]' : 'text-[#9CA3AF]'
+          }`}
+        >
+          <BrainCircuit className="w-3 h-3 text-violet-400" />
+          <span>Knowledge</span>
         </button>
       </div>
     </header>

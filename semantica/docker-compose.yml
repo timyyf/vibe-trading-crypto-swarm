@@ -1,0 +1,13 @@
+services:
+  semantica:
+    build: .
+    ports:
+      - "8001:8001"
+    environment:
+      - SEMANTICA_KG_PATH=/app/kg.json
+      - DATABASE_URL=${DATABASE_URL:-}
+    volumes:
+      - semantica_data:/app/data
+
+volumes:
+  semantica_data:
