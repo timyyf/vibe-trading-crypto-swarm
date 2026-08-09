@@ -12,6 +12,46 @@ O **Vibe Trading Swarm AI** é um sistema avançado de tomada de decisão para c
 
 ---
 
+## 🆕 Novidades & Atualizações Recentes
+
+### 🧠 Memória de Longo Prazo — Semantica Knowledge Graph
+- O comitê agora **grava cada decisão automaticamente** em um grafo de conhecimento (`Semantica`, sidecar no Render free) e consulta **precedentes históricos**, **provenance** (cadeia causal) e estatísticas na nova aba **Knowledge**.
+- Degradação graciosa: sem o sidecar, o app continua 100% funcional.
+- Opcional: `SEMANTICA_PRECEDENT_INJECTION=true` injeta 1–3 casos similares no prompt do comitê para decisões informadas pela memória.
+
+### 🗳️ Voto Ponderado do Comitê (Fase 1)
+- Agentes com status `DEGRADADO` passaram a **pesar 0.5** no consenso (em vez de 1.0).
+- Quórum ajustado a **2/3 do peso total** e confiança final proporcional ao peso — um agente degradado não mais desvirtua a decisão.
+
+### 📈 Tendência 5m com Sparkline no Top 100
+- Nova coluna **Tendência (5m)** com mini-gráfico SVG para cada ativo (novo endpoint `/api/crypto/sparkline` com cache e concorrência controlada).
+
+### 🔍 Observabilidade — `/api/diagnostics`
+- Dashboard com **contagem de requisições, latência p50/p95 e breakdown por rota** em uma janela de 15 minutos.
+
+### 🧪 Suíte de Testes Automatizados (Vitest)
+- **48 testes unitários** cobrindo os motores quantitativos (técnico, risco, baleias, orderbook, sentimento, alpha), validação do swarm e novos utilitários (sparkline, observabilidade, voto ponderado).
+
+### 🛡️ Validação de API & Rate Limit
+- **zod**: payloads inválidos do comitê retornam `400` com a lista de erros detalhada.
+- **express-rate-limit** nos endpoints do comitê contra abuso.
+
+### 📓 Diário de Trades com Estatísticas e Persistência
+- Histórico salvo no **localStorage** do navegador (sobrevive a recarregamentos).
+- Painel com **Win-rate, PnL total/médio**, trades fechados, abertos e `pnlPercent` por operação (calculado ao fechar — invertido corretamente para VENDA).
+
+### 📲 PWA + Notificações de Sinal Forte
+- **Instalável** (manifest + service worker com cache-first para estáticos e network-first para `/api`).
+- **Notificação push** quando o comitê emite sinal forte (≠ NEUTRO com confiança ≥ 75%), com **re-check automático a cada 5 min** e toggle NOTIF ON/OFF no header.
+
+### 💡 "Explicar Decisão" no Consenso
+- Botão que revela o **resumo do consenso e os pontos de raciocínio** (reasoningNotes) do comitê passo a passo.
+
+### 🚀 Otimização de Latência
+- Health cache (25s), sondas paralelas com deadline (1.5s) e swarm em `Promise.all` — análise do comitê caiu de ~5s para **~1.3s** em fallback.
+
+---
+
 ## 🤖 Agentes do Comitê Swarm-01
 
 1. **Dr. Quant Graph** *(Análise Técnica & Gráficos)*:
