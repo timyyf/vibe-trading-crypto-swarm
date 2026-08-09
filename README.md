@@ -82,6 +82,34 @@ Acesse em `http://localhost:3000`.
 
 ---
 
+## ☁️ Deploy no Netlify
+
+O app é uma SPA + Express em **Netlify Functions** (`netlify.toml` + `netlify/functions/api.ts` via `serverless-http`). Basta conectar o repositório — build e publish já estão configurados.
+
+### Passos no dashboard
+
+1. **New site** → importar do GitHub (`timyyf/vibe-trading-crypto-swarm`).
+   - Build command `npm run build` e publish `dist` já vêm do `netlify.toml`.
+2. **Site configuration → Functions → Function timeout**: alterar para **26s**
+   (o `/api/swarm/analyze` com Gemini pode levar até ~18s + cold start; sem chave
+   o fallback local responde em ~1.3s).
+3. **Environment variables**:
+   | Variável | Obrigatória? | Descrição |
+   |---|---|---|
+   | `GEMINI_API_KEY` | opcional | Chave do Gemini 2.5 Flash. Sem ela o comitê roda em fallback determinístico com dados reais. |
+   | `SEMANTICA_BASE_URL` | opcional | URL do sidecar Semantica no Render (ver seção acima). |
+   | `SEMANTICA_ENABLED` | opcional | `true` para ativar o knowledge graph (default `true`). |
+4. **Deploy**. Verificar depois:
+   - `https://<site>.netlify.app/api/health` → `ONLINE`/`DEGRADED` com 9 agentes diagnosticados
+   - `https://<site>.netlify.app/api/knowledge/status` → `{"enabled": false}` sem sidecar
+
+### Observações
+- `/api/swarm/test` roda o suite de validação completo (várias análises) — use apenas em desenvolvimento local.
+- O bundle da function é validado no CI local com `npx esbuild netlify/functions/api.ts --bundle --platform=node --format=cjs`.
+- Se o sidecar Semantica cair, o app segue 100% funcional (degradação graciosa).
+
+---
+
 ## 🧠 Semantica — Memória de Longo Prazo (Knowledge Graph)
 
 O comitê grava cada decisão em um grafo de conhecimento **Semantica** (sidecar Python)
