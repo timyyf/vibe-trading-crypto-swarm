@@ -1,5 +1,5 @@
 import React from 'react';
-import { TrendingUp, Users, ShieldAlert, Cpu, BookOpen, Flame, Clock } from 'lucide-react';
+import { TrendingUp, Users, ShieldAlert, Cpu, BookOpen, Flame, Clock, Bell, BellOff } from 'lucide-react';
 import { SystemDiagnosticResult } from '../types';
 
 interface HeaderProps {
@@ -10,6 +10,8 @@ interface HeaderProps {
   hasActiveSignal: boolean;
   signalCountdown: string;
   systemHealth: SystemDiagnosticResult | null;
+  notificationsEnabled: boolean;
+  onToggleNotifications: () => void;
   onOpenDiagnostics: () => void;
 }
 
@@ -21,6 +23,8 @@ export const Header: React.FC<HeaderProps> = ({
   hasActiveSignal,
   signalCountdown,
   systemHealth,
+  notificationsEnabled,
+  onToggleNotifications,
   onOpenDiagnostics,
 }) => {
   const isHealthOk = systemHealth?.overallStatus === 'ONLINE';
@@ -131,6 +135,28 @@ export const Header: React.FC<HeaderProps> = ({
               <span>VAL: {signalCountdown}</span>
             </div>
           )}
+
+          {/* Notification Toggle */}
+          <button
+            onClick={onToggleNotifications}
+            className={`text-[10px] font-mono px-2.5 py-1 rounded border flex items-center gap-1.5 transition-all cursor-pointer ${
+              notificationsEnabled
+                ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/20'
+                : 'bg-[#1C1F24] border-[#24272C] text-[#9CA3AF] hover:border-[#374151]'
+            }`}
+            title={
+              notificationsEnabled
+                ? 'Notificações ativas — alerta de sinal forte + re-check a cada 5min'
+                : 'Ativar notificações de sinal forte'
+            }
+          >
+            {notificationsEnabled ? (
+              <Bell className="w-3.5 h-3.5" />
+            ) : (
+              <BellOff className="w-3.5 h-3.5" />
+            )}
+            <span className="hidden sm:inline">{notificationsEnabled ? 'NOTIF: ON' : 'NOTIF: OFF'}</span>
+          </button>
 
           {/* System Diagnostic Status Badge */}
           <button

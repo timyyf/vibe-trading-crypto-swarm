@@ -9,8 +9,11 @@ import { TradeJournal } from './components/TradeJournal';
 import { SystemWarningToast } from './components/SystemWarningToast';
 import { SystemDiagnosticModal } from './components/SystemDiagnosticModal';
 import { CryptoAsset, KlinePoint, WhaleOverview, SwarmAnalysisResult, TradeJournalEntry, AlphaFactor, SystemDiagnosticResult } from './types';
+import { isStrongSignal, requestNotificationPermission, showSignalNotification } from './lib/notifications';
 
 const JOURNAL_STORAGE_KEY = 'vibe-swarm-journal';
+const NOTIFICATIONS_STORAGE_KEY = 'vibe-swarm-notifications';
+const REANALYSIS_INTERVAL_MS = 5 * 60 * 1000;
 
 const loadJournalEntries = (): TradeJournalEntry[] => {
   try {
@@ -59,6 +62,14 @@ export default function App() {
   const [isDiagnosticModalOpen, setIsDiagnosticModalOpen] = useState<boolean>(false);
   const [toastDismissed, setToastDismissed] = useState<boolean>(false);
 
+  const [notificationsEnabled, setNotificationsEnabled] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(NOTIFICATIONS_STORAGE_KEY) === '1';
+    } catch {
+      return false;
+    }
+  });
+
   // Periodic Background Self-Diagnostic Check (Every 15 Seconds)
   useEffect(() => {
     runSystemDiagnosticCheck();
@@ -76,6 +87,39 @@ export default function App() {
       console.warn('Falha ao salvar diário de trades no localStorage:', err);
     }
   }, [journalEntries]);
+
+  // Persist notifications preference
+  useEffect(() => {
+    try {
+      localStorage.setItem(NOTIFICATIONS_STORAGE_KEY, notificationsEnabled ? '1' : '0');
+    } catch (err) {
+      console.warn('Falha ao salvar preferência de notificações:', err);
+    }
+  }, [notificationsEnabled]);
+
+  // Request notification permission when enabled
+  useEffect(() => {
+    if (notificationsEnabled) {
+      requestNotificationPermission();
+    }
+  }, [notificationsEnabled]);
+
+  // Strong-signal notification whenever a new swarm result arrives
+  useEffect(() => {
+    if (notificationsEnabled && swarmResult && isStrongSignal(swarmResult)) {
+      showSignalNotification(swarmResult);
+    }
+  }, [swarmResult, notificationsEnabled]);
+
+  // Periodic re-check: re-analyze active symbol every 5min while notifications are on
+  useEffect(() => {
+    if (!notificationsEnabled) return;
+    const interval = setInterval(() => {
+      if (document.hidden || !selectedAsset) return;
+      handleRunSwarmAnalysis(selectedAsset.symbol, 5);
+    }, REANALYSIS_INTERVAL_MS);
+    return () => clearInterval(interval);
+  }, [notificationsEnabled, selectedAsset]);
 
   const runSystemDiagnosticCheck = async (simulateAgent?: string, simulateDegraded?: boolean) => {
     setIsCheckingHealth(true);
@@ -309,6 +353,8 @@ export default function App() {
         hasActiveSignal={hasActiveSignal}
         signalCountdown={getHeaderSignalCountdown()}
         systemHealth={systemHealth}
+        notificationsEnabled={notificationsEnabled}
+        onToggleNotifications={() => setNotificationsEnabled((prev) => !prev)}
         onOpenDiagnostics={() => setIsDiagnosticModalOpen(true)}
       />
 

@@ -1,0 +1,19 @@
+{
+  "name": "Vibe-Trading Swarm AI",
+  "short_name": "Swarm AI",
+  "description": "Comitê multi-agente de análise de criptomoedas em tempo real.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0A0B0D",
+  "theme_color": "#0A0B0D",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
