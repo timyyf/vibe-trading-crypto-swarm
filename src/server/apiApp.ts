@@ -1,5 +1,5 @@
 import express from "express";
-import { getTop100CryptoAssets, getCryptoKlines, ALPHA_ZOO_FACTORS } from "./cryptoDataService.js";
+import { getTop100CryptoAssets, getCryptoKlines, getSparklinesForSymbols, ALPHA_ZOO_FACTORS } from "./cryptoDataService.js";
 import { analyzeCryptoWithSwarm } from "./geminiService.js";
 import { validateAndSanitizeSwarmResponse, runSwarmTestSuite } from "../lib/swarmValidator.js";
 import { getWhaleOverview } from "./whaleDataService.js";
@@ -325,6 +325,26 @@ app.get("/api/crypto/whales", async (_req, res) => {
 // Alpha Zoo Factors
 app.get("/api/crypto/alpha-factors", (_req, res) => {
   res.json({ success: true, data: ALPHA_ZOO_FACTORS });
+});
+
+// Sparklines de tendência (fechamentos 5m) para 1+ símbolos — "symbols=BTC,ETH,SOL"
+app.get("/api/crypto/sparkline", async (req, res) => {
+  try {
+    const symbolsParam = (req.query.symbols as string) || (req.query.symbol as string) || "";
+    if (!symbolsParam.trim()) {
+      return res.status(400).json({ success: false, error: "Parâmetro 'symbols' é obrigatório (ex.: symbols=BTC,ETH,SOL)" });
+    }
+    const symbols = symbolsParam
+      .split(",")
+      .map((s) => s.trim().toUpperCase())
+      .filter(Boolean)
+      .slice(0, 100);
+    const sparklines = await getSparklinesForSymbols(symbols, 24);
+    res.json({ success: true, count: Object.keys(sparklines).length, data: sparklines });
+  } catch (err) {
+    console.error("Error fetching sparklines:", err);
+    res.status(500).json({ success: false, error: "Falha ao carregar sparklines" });
+  }
 });
 
 // Real-Time HMM Market Regime Detection (Baum-Welch sobre klines reais)

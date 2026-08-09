@@ -320,6 +320,53 @@ function formatBinanceTime(timestampMs: string): string {
   return `${timeObj.getHours().toString().padStart(2, '0')}:${timeObj.getMinutes().toString().padStart(2, '0')}`;
 }
 
+// Sparklines de tendência (fechamentos) por símbolo, com cache em memória (TTL 60s)
+// para evitar martelar a Binance a cada atualização da tabela Top 100.
+const sparklineCache = new Map<string, { points: number[]; fetchedAt: number }>();
+const SPARKLINE_TTL_MS = 60 * 1000;
+
+export async function getCryptoSparkline(symbol: string, limit = 24): Promise<number[]> {
+  const key = `${symbol}:${limit}`;
+  const cached = sparklineCache.get(key);
+  if (cached && Date.now() - cached.fetchedAt < SPARKLINE_TTL_MS) return cached.points;
+
+  const klines = await getCryptoKlines(symbol, '5m', limit);
+  const points = klines.map((k) => k.close);
+  if (points.length > 0) {
+    sparklineCache.set(key, { points, fetchedAt: Date.now() });
+  }
+  return points;
+}
+
+// Busca sparklines para vários símbolos com concorrência limitada, reutilizando o cache.
+export async function getSparklinesForSymbols(symbols: string[], limit = 24): Promise<Record<string, number[]>> {
+  const result: Record<string, number[]> = {};
+  const freshSymbols: string[] = [];
+
+  for (const sym of symbols) {
+    const key = `${sym}:${limit}`;
+    const cached = sparklineCache.get(key);
+    if (cached && Date.now() - cached.fetchedAt < SPARKLINE_TTL_MS) {
+      result[sym] = cached.points;
+    } else {
+      freshSymbols.push(sym);
+    }
+  }
+
+  const CONCURRENCY = 5;
+  for (let i = 0; i < freshSymbols.length; i += CONCURRENCY) {
+    const batch = freshSymbols.slice(i, i + CONCURRENCY);
+    const settled = await Promise.allSettled(batch.map((sym) => getCryptoSparkline(sym, limit)));
+    settled.forEach((s, j) => {
+      if (s.status === 'fulfilled' && s.value.length > 0) {
+        result[batch[j]] = s.value;
+      }
+    });
+  }
+
+  return result;
+}
+
 // Alpha Zoo Factors (Vibe-Trading library) — valores ic/sharpe/winRate são REFERÊNCIA de literatura
 // (papers GTJA-191 / Alpha101). O valor atual do fator é calculado em tempo real via /api/crypto/hmm e /api/crypto/backtest.
 export const ALPHA_ZOO_FACTORS: AlphaFactor[] = [

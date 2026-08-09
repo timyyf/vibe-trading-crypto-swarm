@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { CryptoAsset } from '../types';
 import { Search, Flame, ArrowUpDown, TrendingUp, TrendingDown, Bot } from 'lucide-react';
+import { buildSparklineGeometry } from '../lib/sparkline';
 
 interface Top100TableProps {
   assets: CryptoAsset[];
@@ -12,10 +13,34 @@ interface AssetRowProps {
   asset: CryptoAsset;
   isSelected: boolean;
   maxVolume: number;
+  sparkline?: number[];
+  sparklineLoading: boolean;
   onSelectAsset: (asset: CryptoAsset, runSwarmImmediately?: boolean) => void;
 }
 
-const AssetRow: React.FC<AssetRowProps> = ({ asset, isSelected, maxVolume, onSelectAsset }) => {
+const SparklineCell: React.FC<{ points?: number[]; loading: boolean }> = ({ points, loading }) => {
+  if (loading && !points) {
+    return <div className="w-16 h-8 bg-[#0A0B0D] rounded border border-[#24272C] animate-pulse" />;
+  }
+  if (!points || points.length < 2) {
+    return <span className="text-[9px] font-mono text-[#6B7280]">—</span>;
+  }
+  const geo = buildSparklineGeometry(points);
+  return (
+    <svg width="64" height="28" className="block mx-auto" aria-label="Tendência de preço">
+      <polyline
+        points={geo.points}
+        fill="none"
+        stroke={geo.trendUp ? '#34D399' : '#FB7185'}
+        strokeWidth="1.5"
+        strokeLinejoin="round"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+};
+
+const AssetRow: React.FC<AssetRowProps> = ({ asset, isSelected, maxVolume, sparkline, sparklineLoading, onSelectAsset }) => {
   const isPositive = asset.change24h >= 0;
   const volPct = Math.min(100, Math.max(5, (asset.volume24h / maxVolume) * 100));
   const isExtremeVolatile = Math.abs(asset.change24h) >= 8;
@@ -116,6 +141,10 @@ const AssetRow: React.FC<AssetRowProps> = ({ asset, isSelected, maxVolume, onSel
         </div>
       </td>
 
+      <td className="py-2 px-3 text-center">
+        <SparklineCell points={sparkline} loading={sparklineLoading} />
+      </td>
+
       <td className="py-2 px-3 text-right">
         <div className="text-white font-medium">
           ${(asset.volume24h / 1e6).toLocaleString('en-US', { maximumFractionDigits: 1 })}M
@@ -145,6 +174,39 @@ export const Top100Table: React.FC<Top100TableProps> = ({ assets, onSelectAsset,
   const [onlyExtremeVolatile, setOnlyExtremeVolatile] = useState<boolean>(false);
   const [sortField, setSortField] = useState<'volume24h' | 'change24h' | 'rank' | 'price'>('volume24h');
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc');
+  const [sparklines, setSparklines] = useState<Record<string, number[]>>({});
+  const [sparklineLoading, setSparklineLoading] = useState<boolean>(true);
+  const fetchedSymbolsKeyRef = useRef<string>('');
+
+  // Busca os sparklines do conjunto atual de símbolos (reusa cache do servidor).
+  useEffect(() => {
+    const symbols = Array.from(new Set(assets.map((a) => a.symbol))).slice(0, 100);
+    const key = symbols.sort().join(',');
+    if (symbols.length === 0 || key === fetchedSymbolsKeyRef.current) return;
+    fetchedSymbolsKeyRef.current = key;
+
+    let cancelled = false;
+    setSparklineLoading(true);
+    fetch(`/api/crypto/sparkline?symbols=${encodeURIComponent(symbols.join(','))}`)
+      .then((res) => {
+        if (!res.ok) throw new Error('Servidor indisponível');
+        return res.json();
+      })
+      .then((json) => {
+        if (!cancelled && json.success) {
+          setSparklines(json.data || {});
+        }
+      })
+      .catch((err) => {
+        console.warn('Falha ao carregar sparklines:', err);
+      })
+      .finally(() => {
+        if (!cancelled) setSparklineLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [assets]);
 
   const categories = ['Todos', 'Layer 1', 'DeFi', 'Meme', 'AI & Data', 'Layer 2', 'Infrastructure'];
 
@@ -259,6 +321,11 @@ export const Top100Table: React.FC<Top100TableProps> = ({ assets, onSelectAsset,
                   <ArrowUpDown className="w-3 h-3 text-[#6B7280]" />
                 </div>
               </th>
+              <th className="py-2 px-3 text-center">
+                <div className="flex items-center justify-center gap-1">
+                  <span>Tendência (5m)</span>
+                </div>
+              </th>
               <th className="py-2 px-3 text-right cursor-pointer hover:text-white" onClick={() => handleSort('volume24h')}>
                 <div className="flex items-center justify-end gap-1">
                   <span>Vol 24h (USD)</span>
@@ -275,6 +342,8 @@ export const Top100Table: React.FC<Top100TableProps> = ({ assets, onSelectAsset,
                 asset={asset}
                 isSelected={asset.symbol === selectedSymbol}
                 maxVolume={maxVolume}
+                sparkline={sparklines[asset.symbol]}
+                sparklineLoading={sparklineLoading}
                 onSelectAsset={onSelectAsset}
               />
             ))}
