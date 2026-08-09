@@ -22,6 +22,22 @@ export const swarmBodySchema = z.object({
 
 export type SwarmBody = z.infer<typeof swarmBodySchema>;
 
+export const journalBodySchema = z.object({
+  entryId: z.string().trim().min(1, 'entryId é obrigatório').max(64, 'entryId muito longo'),
+  symbol: z.string().trim().min(1, 'symbol é obrigatório').max(20, 'symbol muito longo'),
+  type: z.enum(['COMPRA', 'VENDA', 'OBSERVAÇÃO']),
+  status: z.enum(['EM_ANDAMENTO', 'LUCRO', 'PREJUÍZO', 'CANCELADO']),
+  entryPrice: z.coerce.number().finite().positive().optional(),
+  targetPrice: z.coerce.number().finite().positive().optional(),
+  stopPrice: z.coerce.number().finite().positive().optional(),
+  confidence: z.coerce.number().finite().min(0).max(100).optional(),
+  notes: z.string().trim().max(4000, 'notes muito longo').optional(),
+  timestamp: z.coerce.number().finite().nonnegative('timestamp inválido'),
+  pnlPercent: z.coerce.number().finite().optional(),
+});
+
+export type JournalBody = z.infer<typeof journalBodySchema>;
+
 export const swarmAnalyzeLimiter = rateLimit({
   windowMs: 15 * 1000,
   max: 30,

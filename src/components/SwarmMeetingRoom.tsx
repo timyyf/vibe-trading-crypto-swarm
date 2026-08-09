@@ -877,7 +877,7 @@ export const SwarmMeetingRoom: React.FC<SwarmMeetingRoomProps> = ({
                   <BookMarked className="w-3.5 h-3.5" />
                   <span>
                     {isNeutral
-                      ? 'Operação Neutra (Sem Registro)'
+                      ? 'Neutro registrado como Observação'
                       : addedToJournal
                       ? '✓ Operação no Diário'
                       : 'Registrar Operação no Diário'}

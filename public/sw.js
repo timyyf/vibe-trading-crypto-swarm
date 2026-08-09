@@ -1,4 +1,4 @@
-const CACHE_NAME = 'vibe-swarm-v1';
+const CACHE_NAME = 'vibe-swarm-v2';
 const STATIC_ASSETS = ['/', '/index.html', '/manifest.webmanifest', '/icon.svg'];
 
 self.addEventListener('install', (event) => {

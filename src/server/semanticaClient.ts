@@ -106,6 +106,57 @@ export async function recordDecision(analysis: SwarmAnalysisResult): Promise<str
   return res?.decision_id ?? null;
 }
 
+export interface JournalRecordInput {
+  entryId: string;
+  symbol: string;
+  type: string;
+  status: string;
+  entryPrice?: number;
+  targetPrice?: number;
+  stopPrice?: number;
+  confidence?: number;
+  notes?: string;
+  timestamp: number;
+  pnlPercent?: number;
+}
+
+// Grava (ou atualiza via upsert) um registro do diário de trades no grafo.
+// Id determinístico (journal-<entryId>) permite sobrescrever o resultado
+// quando a operação fecha (LUCRO/PREJUÍZO) sem duplicar nós.
+export async function recordJournalEntry(entry: JournalRecordInput): Promise<string | null> {
+  if (!isSemanticaEnabled()) return null;
+  const confidence = Math.max(0, Math.min(1, (entry.confidence ?? 50) / 100));
+  const outcome =
+    entry.status === 'LUCRO' || entry.status === 'PREJUÍZO' || entry.status === 'CANCELADO'
+      ? `FECHADA: ${entry.status}`
+      : 'EM_ANDAMENTO';
+  const payload = {
+    decision_id: `journal-${entry.entryId}`,
+    category: 'trade_journal',
+    scenario: `Trade em ${entry.symbol} (${entry.type}) — ${outcome}${entry.notes ? `. ${entry.notes}` : ''}`,
+    reasoning: entry.notes ?? '',
+    outcome,
+    confidence,
+    entities: [entry.symbol],
+    decision_maker: 'journal',
+    metadata: {
+      entryId: entry.entryId,
+      type: entry.type,
+      status: entry.status,
+      entryPrice: entry.entryPrice,
+      targetPrice: entry.targetPrice,
+      stopPrice: entry.stopPrice,
+      pnlPercent: entry.pnlPercent,
+      timestamp: entry.timestamp,
+    },
+  };
+  const res = await semanticaRequest<{ decision_id: string }>('/decision', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+  return res?.decision_id ?? null;
+}
+
 export async function getPrecedents(scenario: string, limit = 5): Promise<DecisionRecord[] | null> {
   if (!isSemanticaEnabled()) return null;
   return semanticaRequest<DecisionRecord[]>(

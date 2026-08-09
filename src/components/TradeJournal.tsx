@@ -1,6 +1,7 @@
 import React from 'react';
 import { TradeJournalEntry } from '../types';
 import { BookOpen, Clock, Download, CheckCircle, XCircle, Code, Shield, TrendingUp, Target, Percent, Layers } from 'lucide-react';
+import { JOURNAL_MAX_ENTRIES, JOURNAL_TTL_DAYS } from '../lib/journal';
 
 interface TradeJournalProps {
   entries: TradeJournalEntry[];
@@ -38,15 +39,16 @@ if (shortCondition)
 
   const pnlColor = (value: number) => (value >= 0 ? 'text-emerald-400' : 'text-rose-400');
 
-  const closed = entries.filter((e) => e.status === 'LUCRO' || e.status === 'PREJUÍZO');
+  const trades = entries.filter((e) => e.type !== 'OBSERVAÇÃO');
+  const closed = trades.filter((e) => e.status === 'LUCRO' || e.status === 'PREJUÍZO');
   const wins = closed.filter((e) => e.status === 'LUCRO').length;
   const losses = closed.filter((e) => e.status === 'PREJUÍZO').length;
-  const openCount = entries.filter((e) => e.status === 'EM_ANDAMENTO').length;
+  const openCount = trades.filter((e) => e.status === 'EM_ANDAMENTO').length;
   const winRate = closed.length > 0 ? (wins / closed.length) * 100 : null;
   const totalPnl = closed.reduce((acc, e) => acc + (e.pnlPercent ?? 0), 0);
   const avgPnl = closed.length > 0 ? totalPnl / closed.length : null;
   const symbolCounts = new Map<string, number>();
-  entries.forEach((e) => symbolCounts.set(e.symbol, (symbolCounts.get(e.symbol) ?? 0) + 1));
+  trades.forEach((e) => symbolCounts.set(e.symbol, (symbolCounts.get(e.symbol) ?? 0) + 1));
   const topSymbols = [...symbolCounts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3);
 
   const statCard = (icon: React.ReactNode, label: string, value: string, valueClass = 'text-white') => (
@@ -73,6 +75,11 @@ if (shortCondition)
           </p>
         </div>
 
+        <div className="flex items-center gap-2">
+          <div className="px-2.5 py-1.5 rounded bg-[#1C1F24] border border-[#24272C] font-mono text-[10px] font-bold text-[#9CA3AF]">
+            {entries.length}/{JOURNAL_MAX_ENTRIES} registros • retenção {JOURNAL_TTL_DAYS}d
+          </div>
+
         <button
           onClick={exportPineScript}
           className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded bg-[#1C1F24] hover:bg-[#24272C] text-emerald-400 border border-[#24272C] font-mono font-bold text-xs uppercase transition-colors"
@@ -80,6 +87,7 @@ if (shortCondition)
           <Code className="w-3.5 h-3.5 text-emerald-400" />
           <span>Export Pine Script v6</span>
         </button>
+        </div>
       </div>
 
       {/* Performance Stats */}
@@ -123,7 +131,7 @@ if (shortCondition)
             <Clock className="w-6 h-6 text-[#6B7280] mx-auto" />
             <p>Nenhum trade registrado no diário ainda.</p>
             <p className="text-[#9CA3AF]">
-              Vá para a <span className="text-emerald-400 font-bold uppercase">Sala de Reuniões</span> e clique em "Registrar Operação no Diário" após gerar uma análise.
+              Vá para a <span className="text-emerald-400 font-bold uppercase">Sala de Reuniões</span> e rode uma análise — operações e observações do comitê são registradas automaticamente.
             </p>
           </div>
         ) : (
@@ -147,6 +155,7 @@ if (shortCondition)
                   const m = Math.floor(remainingSecs / 60);
                   const s = remainingSecs % 60;
                   const isExpired = remainingSecs <= 0;
+                  const isObservation = entry.type === 'OBSERVAÇÃO';
 
                   return (
                     <tr key={entry.id} className="hover:bg-[#1C1F24] transition-colors">
@@ -157,7 +166,9 @@ if (shortCondition)
                           <span>{entry.symbol}</span>
                           <span
                             className={`px-1.5 py-0.2 rounded text-[9px] uppercase ${
-                              entry.type === 'COMPRA'
+                              isObservation
+                                ? 'bg-amber-500/10 text-amber-400 border border-amber-500/30'
+                                : entry.type === 'COMPRA'
                                 ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30'
                                 : 'bg-rose-500/10 text-rose-400 border border-rose-500/30'
                             }`}
@@ -168,16 +179,24 @@ if (shortCondition)
                       </td>
 
                       <td className="py-2 px-3 text-right font-bold text-white">
-                        ${entry.entryPrice.toLocaleString()}
+                        {entry.entryPrice !== undefined ? `$${entry.entryPrice.toLocaleString()}` : '—'}
                       </td>
 
                       <td className="py-2 px-3 text-right text-[11px]">
-                        <div className="text-emerald-400">TP: ${entry.targetPrice.toLocaleString()}</div>
-                        <div className="text-rose-400">SL: ${entry.stopPrice.toLocaleString()}</div>
+                        {isObservation || entry.targetPrice === undefined || entry.stopPrice === undefined ? (
+                          <span className="text-[#6B7280]">—</span>
+                        ) : (
+                          <>
+                            <div className="text-emerald-400">TP: ${entry.targetPrice.toLocaleString()}</div>
+                            <div className="text-rose-400">SL: ${entry.stopPrice.toLocaleString()}</div>
+                          </>
+                        )}
                       </td>
 
                       <td className="py-2 px-3 text-center">
-                        {isExpired ? (
+                        {isObservation ? (
+                          <span className="text-[#6B7280]">—</span>
+                        ) : isExpired ? (
                           <span className="text-[#6B7280]">Expirado ({entry.durationMinutes}m)</span>
                         ) : (
                           <span className="text-emerald-400 font-bold">
@@ -189,16 +208,18 @@ if (shortCondition)
                       <td className="py-2 px-3 text-center">
                         <span
                           className={`px-2 py-0.5 rounded text-[9px] font-bold uppercase ${
-                            entry.status === 'EM_ANDAMENTO'
+                            isObservation
+                              ? 'bg-amber-500/10 text-amber-400 border border-amber-500/30'
+                              : entry.status === 'EM_ANDAMENTO'
                               ? 'bg-indigo-500/10 text-indigo-400 border border-indigo-500/30'
                               : entry.status === 'LUCRO'
                               ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30'
                               : 'bg-rose-500/10 text-rose-400 border border-rose-500/30'
                           }`}
                         >
-                          {entry.status}
+                          {isObservation ? 'OBSERVAÇÃO' : entry.status}
                         </span>
-                        {entry.pnlPercent !== undefined && (
+                        {!isObservation && entry.pnlPercent !== undefined && (
                           <div className={`mt-0.5 text-[10px] font-bold ${pnlColor(entry.pnlPercent)}`}>
                             {entry.pnlPercent >= 0 ? '+' : ''}{entry.pnlPercent.toFixed(1)}%
                           </div>
@@ -206,20 +227,24 @@ if (shortCondition)
                       </td>
 
                       <td className="py-2 px-3 text-center space-x-1">
-                        <button
-                          onClick={() => onUpdateStatus(entry.id, 'LUCRO')}
-                          className="px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 hover:bg-emerald-600 hover:text-white border border-emerald-500/30 text-[9px] font-bold uppercase"
-                          title="Marcar como Lucro"
-                        >
-                          + Profit
-                        </button>
-                        <button
-                          onClick={() => onUpdateStatus(entry.id, 'PREJUÍZO')}
-                          className="px-1.5 py-0.5 rounded bg-rose-500/10 text-rose-400 hover:bg-rose-600 hover:text-white border border-rose-500/30 text-[9px] font-bold uppercase"
-                          title="Marcar como Stop Loss"
-                        >
-                          - Loss
-                        </button>
+                        {!isObservation && (
+                          <>
+                            <button
+                              onClick={() => onUpdateStatus(entry.id, 'LUCRO')}
+                              className="px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 hover:bg-emerald-600 hover:text-white border border-emerald-500/30 text-[9px] font-bold uppercase"
+                              title="Marcar como Lucro"
+                            >
+                              + Profit
+                            </button>
+                            <button
+                              onClick={() => onUpdateStatus(entry.id, 'PREJUÍZO')}
+                              className="px-1.5 py-0.5 rounded bg-rose-500/10 text-rose-400 hover:bg-rose-600 hover:text-white border border-rose-500/30 text-[9px] font-bold uppercase"
+                              title="Marcar como Stop Loss"
+                            >
+                              - Loss
+                            </button>
+                          </>
+                        )}
                         <button
                           onClick={() => onRemoveEntry(entry.id)}
                           className="px-1.5 py-0.5 rounded bg-[#1C1F24] text-[#6B7280] hover:text-white text-[9px]"

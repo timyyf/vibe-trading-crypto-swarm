@@ -72,14 +72,20 @@ def get_graph() -> ContextGraph:
 
 
 def _ensure_decision_storage(g: ContextGraph) -> None:
+    from collections import defaultdict
+
     if not hasattr(g, "_decisions"):
         g._decisions = {}
-        g._decision_index = {}
-        g._entity_index = {}
+        g._decision_index = defaultdict(set)
+        g._entity_index = defaultdict(set)
         g._temporal_index = []
+    # Mantém os índices como defaultdict(set): a lib (record_decision) escreve
+    # via g._decision_index[category].add(...), que quebra com dict plano.
     g._decisions = getattr(g, "_decisions", {})
-    g._decision_index = getattr(g, "_decision_index", {})
-    g._entity_index = getattr(g, "_entity_index", {})
+    if not isinstance(getattr(g, "_decision_index", None), defaultdict):
+        g._decision_index = defaultdict(set, getattr(g, "_decision_index", {}) or {})
+    if not isinstance(getattr(g, "_entity_index", None), defaultdict):
+        g._entity_index = defaultdict(set, getattr(g, "_entity_index", {}) or {})
     g._temporal_index = getattr(g, "_temporal_index", [])
 
 
@@ -110,6 +116,76 @@ def _restore_decision(g: ContextGraph, decision: Dict[str, Any]) -> None:
         if timestamp:
             g._temporal_index.append((decision_id, timestamp))
             g._temporal_index.sort(key=lambda x: x[1], reverse=True)
+
+
+def _upsert_decision(
+    g: ContextGraph,
+    decision_id: str,
+    category: str,
+    scenario: str,
+    reasoning: str,
+    outcome: str,
+    confidence: float,
+    entities: Optional[List[str]],
+    decision_maker: Optional[str],
+    metadata: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Insert or update a decision with a deterministic id (journal upsert).
+
+    Preserves the original ``timestamp``/``recorded_at`` on updates so the
+    journal trade keeps its creation position in the temporal index while the
+    outcome (LUCRO/PREJUÍZO/CANCELADO) is refreshed.
+    """
+    from datetime import datetime
+
+    _ensure_decision_storage(g)
+    existing = g._decisions.get(decision_id)
+    now = datetime.now()
+    if existing:
+        timestamp = existing.get("timestamp") or now.timestamp()
+        recorded_at = existing.get("recorded_at") or datetime.utcnow().isoformat()
+        old_category = str(existing.get("category", ""))
+    else:
+        timestamp = now.timestamp()
+        recorded_at = datetime.utcnow().isoformat()
+        old_category = ""
+
+    entities = [e.strip() for e in (entities or []) if e and e.strip()]
+    decision = {
+        "id": decision_id,
+        "category": category,
+        "scenario": scenario,
+        "reasoning": reasoning,
+        "outcome": outcome,
+        "confidence": float(confidence),
+        "entities": entities,
+        "decision_maker": decision_maker,
+        "timestamp": timestamp,
+        "recorded_at": recorded_at,
+        "valid_from": existing.get("valid_from") if existing else None,
+        "valid_until": existing.get("valid_until") if existing else None,
+        "metadata": metadata or {},
+    }
+
+    if existing is None:
+        try:
+            g._add_decision_to_graph(decision)
+        except Exception as exc:  # pragma: no cover - best effort
+            log.warning("Could not add decision %s to graph: %s", decision_id, exc)
+    else:
+        existing.update(decision)
+        decision = existing
+
+    g._decisions[decision_id] = decision
+    if old_category and old_category != category:
+        g._decision_index.setdefault(old_category, set()).discard(decision_id)
+    g._decision_index.setdefault(category, set()).add(decision_id)
+    for entity in entities:
+        g._entity_index.setdefault(entity, set()).add(decision_id)
+    if not any(did == decision_id for did, _ in g._temporal_index):
+        g._temporal_index.append((decision_id, timestamp))
+        g._temporal_index.sort(key=lambda x: x[1], reverse=True)
+    return decision
 
 
 # ---------------------------------------------------------------------------
@@ -194,6 +270,7 @@ def _persist_snapshot() -> None:
 # ---------------------------------------------------------------------------
 
 class DecisionCreate(BaseModel):
+    decision_id: Optional[str] = Field(None, min_length=1, max_length=200)
     category: str = Field(..., min_length=1, max_length=100)
     scenario: str = Field(..., min_length=1, max_length=5000)
     reasoning: str = Field(..., min_length=1, max_length=10000)
@@ -271,16 +348,33 @@ def stats():
 @app.post("/decision", status_code=201)
 def create_decision(body: DecisionCreate):
     try:
-        decision_id = get_graph().record_decision(
-            category=body.category,
-            scenario=body.scenario,
-            reasoning=body.reasoning,
-            outcome=body.outcome,
-            confidence=body.confidence,
-            entities=body.entities,
-            decision_maker=body.decision_maker,
-            metadata=body.metadata,
-        )
+        if body.decision_id:
+            g = get_graph()
+            _ensure_decision_storage(g)
+            _upsert_decision(
+                g,
+                decision_id=body.decision_id,
+                category=body.category,
+                scenario=body.scenario,
+                reasoning=body.reasoning,
+                outcome=body.outcome,
+                confidence=body.confidence,
+                entities=body.entities,
+                decision_maker=body.decision_maker,
+                metadata=body.metadata,
+            )
+            decision_id = body.decision_id
+        else:
+            decision_id = get_graph().record_decision(
+                category=body.category,
+                scenario=body.scenario,
+                reasoning=body.reasoning,
+                outcome=body.outcome,
+                confidence=body.confidence,
+                entities=body.entities,
+                decision_maker=body.decision_maker,
+                metadata=body.metadata,
+            )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 

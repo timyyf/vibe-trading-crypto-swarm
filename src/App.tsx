@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Header } from './components/Header';
 import { Top100Table } from './components/Top100Table';
 import { SwarmMeetingRoom } from './components/SwarmMeetingRoom';
@@ -9,8 +9,10 @@ import { TradeJournal } from './components/TradeJournal';
 import { KnowledgeGraphPanel } from './components/KnowledgeGraphPanel';
 import { SystemWarningToast } from './components/SystemWarningToast';
 import { SystemDiagnosticModal } from './components/SystemDiagnosticModal';
+import { CheckCircle } from 'lucide-react';
 import { CryptoAsset, KlinePoint, WhaleOverview, SwarmAnalysisResult, TradeJournalEntry, AlphaFactor, SystemDiagnosticResult } from './types';
 import { isStrongSignal, requestNotificationPermission, showSignalNotification } from './lib/notifications';
+import { pruneJournalEntries } from './lib/journal';
 
 const JOURNAL_STORAGE_KEY = 'vibe-swarm-journal';
 const NOTIFICATIONS_STORAGE_KEY = 'vibe-swarm-notifications';
@@ -21,7 +23,7 @@ const loadJournalEntries = (): TradeJournalEntry[] => {
     const raw = localStorage.getItem(JOURNAL_STORAGE_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
+    return pruneJournalEntries(Array.isArray(parsed) ? parsed : []);
   } catch (err) {
     console.warn('Falha ao ler diário de trades do localStorage:', err);
     return [];
@@ -71,6 +73,17 @@ export default function App() {
     }
   });
 
+  const [journalToast, setJournalToast] = useState<string | null>(null);
+
+  const lastAutoLoggedRef = useRef<string | null>(null);
+
+  // Auto-dismiss journal toast after a few seconds
+  useEffect(() => {
+    if (!journalToast) return;
+    const timer = setTimeout(() => setJournalToast(null), 3500);
+    return () => clearTimeout(timer);
+  }, [journalToast]);
+
   // Periodic Background Self-Diagnostic Check (Every 15 Seconds)
   useEffect(() => {
     runSystemDiagnosticCheck();
@@ -111,6 +124,49 @@ export default function App() {
       showSignalNotification(swarmResult);
     }
   }, [swarmResult, notificationsEnabled]);
+
+  // Auto-register every committee verdict in the journal (trades + neutral observations)
+  useEffect(() => {
+    if (!swarmResult) return;
+    const dedupKey = `${swarmResult.assetSymbol}:${swarmResult.expiryTimestamp}`;
+    if (lastAutoLoggedRef.current === dedupKey) return;
+    if (
+      journalEntries.some(
+        (e) => e.symbol === swarmResult.assetSymbol && e.expiryTimestamp === swarmResult.expiryTimestamp
+      )
+    ) {
+      lastAutoLoggedRef.current = dedupKey;
+      return;
+    }
+
+    lastAutoLoggedRef.current = dedupKey;
+    const isTrade = swarmResult.finalDecision === 'COMPRAR' || swarmResult.finalDecision === 'VENDER';
+    handleAddToJournal(
+      isTrade
+        ? {
+            symbol: swarmResult.assetSymbol,
+            type: swarmResult.finalDecision === 'COMPRAR' ? 'COMPRA' : 'VENDA',
+            entryPrice: swarmResult.entryTarget,
+            targetPrice: swarmResult.takeProfit,
+            stopPrice: swarmResult.stopLoss,
+            status: 'EM_ANDAMENTO',
+            durationMinutes: swarmResult.signalDurationMinutes,
+            expiryTimestamp: swarmResult.expiryTimestamp,
+            confidence: swarmResult.confidenceScore,
+            notes: swarmResult.summaryConsensus,
+          }
+        : {
+            symbol: swarmResult.assetSymbol,
+            type: 'OBSERVAÇÃO',
+            entryPrice: swarmResult.assetPrice,
+            status: 'EM_ANDAMENTO',
+            durationMinutes: swarmResult.signalDurationMinutes,
+            expiryTimestamp: swarmResult.expiryTimestamp,
+            confidence: swarmResult.confidenceScore,
+            notes: `Comitê neutro (conf. ${swarmResult.confidenceScore}%): ${swarmResult.summaryConsensus}`,
+          }
+    );
+  }, [swarmResult]);
 
   // Periodic re-check: re-analyze active symbol every 5min while notifications are on
   useEffect(() => {
@@ -304,13 +360,44 @@ export default function App() {
     }
   };
 
+  const pushJournalToGraph = (entry: TradeJournalEntry) => {
+    fetch('/api/knowledge/journal', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        entryId: entry.id,
+        symbol: entry.symbol,
+        type: entry.type,
+        status: entry.status,
+        entryPrice: entry.entryPrice,
+        targetPrice: entry.targetPrice,
+        stopPrice: entry.stopPrice,
+        confidence: entry.confidence,
+        notes: entry.notes,
+        timestamp: entry.timestamp,
+        pnlPercent: entry.pnlPercent,
+      }),
+    }).catch(() => {});
+  };
+
   const handleAddToJournal = (entryData: Omit<TradeJournalEntry, 'id' | 'timestamp'>) => {
+    const alreadyLogged = journalEntries.some(
+      (e) => e.symbol === entryData.symbol && e.expiryTimestamp === entryData.expiryTimestamp
+    );
+    if (alreadyLogged) return;
+
     const newEntry: TradeJournalEntry = {
       ...entryData,
-      id: `trade-${Date.now()}`,
+      id: `trade-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
       timestamp: Date.now(),
     };
-    setJournalEntries((prev) => [newEntry, ...prev]);
+    setJournalEntries((prev) => pruneJournalEntries([newEntry, ...prev]));
+    pushJournalToGraph(newEntry);
+    setJournalToast(
+      entryData.type === 'OBSERVAÇÃO'
+        ? 'Observação do comitê registrada no diário e na memória dos agentes.'
+        : 'Operação registrada no diário e enviada à memória dos agentes.'
+    );
   };
 
   const handleRemoveJournalEntry = (id: string) => {
@@ -318,17 +405,24 @@ export default function App() {
   };
 
   const handleUpdateJournalStatus = (id: string, status: TradeJournalEntry['status']) => {
+    let updatedEntry: TradeJournalEntry | null = null;
     setJournalEntries((prev) =>
       prev.map((e) => {
         if (e.id !== id) return e;
-        if (status === 'EM_ANDAMENTO' || status === 'CANCELADO') return { ...e, status };
+        if (e.type === 'OBSERVAÇÃO') return e;
+        if (status === 'EM_ANDAMENTO' || status === 'CANCELADO') {
+          updatedEntry = { ...e, status };
+          return updatedEntry;
+        }
         const base = status === 'LUCRO'
-          ? e.targetPrice / e.entryPrice - 1
-          : e.stopPrice / e.entryPrice - 1;
+          ? (e.targetPrice ?? e.entryPrice ?? 0) / (e.entryPrice ?? 1) - 1
+          : (e.stopPrice ?? e.entryPrice ?? 0) / (e.entryPrice ?? 1) - 1;
         const pnlPercent = (e.type === 'VENDA' ? -base : base) * 100;
-        return { ...e, status, pnlPercent };
+        updatedEntry = { ...e, status, pnlPercent };
+        return updatedEntry;
       })
     );
+    if (updatedEntry) pushJournalToGraph(updatedEntry);
   };
 
   // Remaining timer formatted string for header pill
@@ -431,6 +525,14 @@ export default function App() {
           onDismiss={() => setToastDismissed(true)}
           onOpenDiagnostics={() => setIsDiagnosticModalOpen(true)}
         />
+      )}
+
+      {/* Journal Toast */}
+      {journalToast && (
+        <div className="fixed bottom-4 right-4 z-50 flex items-center gap-2 px-4 py-3 rounded-lg bg-emerald-950 border border-emerald-700/50 text-emerald-200 shadow-2xl text-xs font-mono animate-fadeIn max-w-xs">
+          <CheckCircle className="w-4 h-4 text-emerald-400 shrink-0" />
+          <span>{journalToast}</span>
+        </div>
       )}
 
       {/* System Diagnostic Detail Modal */}

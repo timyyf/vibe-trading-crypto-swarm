@@ -10,7 +10,7 @@ import { runWhaleTrackerApexEngine } from "./whaleEngine.js";
 import { runAlphaZooEngine } from "./alphaZooEngine.js";
 import { runRiskProtocolOfficerEngine } from "./riskEngine.js";
 import { AgentDiagnostic } from "../types.js";
-import { swarmBodySchema, swarmAnalyzeLimiter, swarmTestLimiter, SwarmBody } from "./swarmSchema.js";
+import { swarmBodySchema, swarmAnalyzeLimiter, swarmTestLimiter, SwarmBody, journalBodySchema } from "./swarmSchema.js";
 import { ApiRequestLogEntry, buildDiagnostics } from "../lib/observability.js";
 import {
   checkSemanticaHealth,
@@ -21,6 +21,7 @@ import {
   isSemanticaEnabled,
   isPrecedentInjectionEnabled,
   recordDecision,
+  recordJournalEntry,
 } from "./semanticaClient.js";
 
 const app = express();
@@ -680,6 +681,21 @@ app.get("/api/knowledge/provenance", async (req, res) => {
   const data = await getDecisionChain(id);
   if (!data) return res.json({ success: false, disabled: true });
   res.json({ success: true, data });
+});
+
+// Grava/atualiza um registro do diário de trades no grafo (memória dos agentes)
+app.post("/api/knowledge/journal", (req, res) => {
+  const parsed = journalBodySchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({
+      success: false,
+      error: "Payload de diário inválido",
+      details: parsed.error.flatten(),
+    });
+  }
+  recordJournalEntry(parsed.data)
+    .then((decisionId) => res.json({ success: true, decisionId }))
+    .catch(() => res.json({ success: true, decisionId: null }));
 });
 
 // Estatísticas agregadas do grafo (nós, arestas, categorias, outcomes)

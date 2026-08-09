@@ -91,10 +91,10 @@ export interface TradeJournalEntry {
   id: string;
   timestamp: number;
   symbol: string;
-  type: 'COMPRA' | 'VENDA';
-  entryPrice: number;
-  targetPrice: number;
-  stopPrice: number;
+  type: 'COMPRA' | 'VENDA' | 'OBSERVAÇÃO';
+  entryPrice?: number;
+  targetPrice?: number;
+  stopPrice?: number;
   status: 'EM_ANDAMENTO' | 'LUCRO' | 'PREJUÍZO' | 'CANCELADO';
   durationMinutes: number;
   expiryTimestamp: number;
