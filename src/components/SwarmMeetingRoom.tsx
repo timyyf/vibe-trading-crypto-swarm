@@ -24,6 +24,7 @@ import {
   Activity,
   Sliders,
   Bug,
+  Info,
 } from 'lucide-react';
 
 interface SwarmMeetingRoomProps {
@@ -114,6 +115,7 @@ export const SwarmMeetingRoom: React.FC<SwarmMeetingRoomProps> = ({
   const [extensionNotice, setExtensionNotice] = useState<string | null>(null);
   const [roomViewMode, setRoomViewMode] = useState<'CONTROL_PANEL' | 'CONSENSUS_ROOM'>('CONTROL_PANEL');
   const [isDebugModalOpen, setIsDebugModalOpen] = useState<boolean>(false);
+  const [showExplanation, setShowExplanation] = useState<boolean>(false);
 
   // Real-time Partial Streaming States
   const [streamingAgents, setStreamingAgents] = useState<AgentReport[]>([]);
@@ -881,9 +883,54 @@ export const SwarmMeetingRoom: React.FC<SwarmMeetingRoomProps> = ({
                       : 'Registrar Operação no Diário'}
                   </span>
                 </button>
+
+                {/* Explain Decision Toggle */}
+                <button
+                  onClick={() => setShowExplanation((prev) => !prev)}
+                  className="w-full py-2 px-3 rounded font-mono font-bold text-xs uppercase tracking-wider flex items-center justify-center gap-1.5 transition-all bg-[#0A0B0D] hover:bg-[#24272C] text-cyan-300 border border-[#24272C] hover:border-cyan-500/40 active:scale-95"
+                  title="Mostra o raciocínio passo a passo que levou o comitê a esta decisão"
+                >
+                  <Info className="w-3.5 h-3.5" />
+                  <span>{showExplanation ? 'Ocultar Explicação' : 'Explicar Decisão'}</span>
+                </button>
               </div>
             </div>
           </div>
+
+          {/* DECISION EXPLANATION PANEL */}
+          {showExplanation && (
+            <div className="bg-[#0E1416] border border-cyan-500/30 rounded-lg p-4 space-y-3 animate-fadeIn">
+              <div className="flex items-center gap-2">
+                <Info className="w-4 h-4 text-cyan-400" />
+                <h3 className="text-xs font-mono font-bold text-white uppercase tracking-wider">
+                  Por que o comitê decidiu {swarmResult.finalDecision}?
+                </h3>
+                <span className="text-[10px] font-mono text-cyan-300 px-2 py-0.5 rounded bg-cyan-500/10 border border-cyan-500/30 font-bold ml-auto">
+                  Confiança {swarmResult.confidenceScore}%
+                </span>
+              </div>
+
+              <p className="text-xs text-[#D1D5DB] leading-relaxed">
+                {swarmResult.summaryConsensus}
+              </p>
+
+              {swarmResult.reasoningNotes && swarmResult.reasoningNotes.length > 0 && (
+                <div className="space-y-1.5">
+                  <div className="text-[10px] font-mono uppercase text-[#6B7280]">Raciocínio passo a passo:</div>
+                  <ol className="space-y-1">
+                    {swarmResult.reasoningNotes.map((note, idx) => (
+                      <li key={idx} className="text-[11px] text-[#9CA3AF] flex items-start gap-2">
+                        <span className="w-4 h-4 rounded bg-cyan-500/10 border border-cyan-500/30 text-cyan-300 text-[9px] font-bold flex items-center justify-center shrink-0 mt-0.5">
+                          {idx + 1}
+                        </span>
+                        <span className="leading-relaxed">{note}</span>
+                      </li>
+                    ))}
+                  </ol>
+                </div>
+              )}
+            </div>
+          )}
 
           {/* INDIVIDUAL AGENT DEBATE ROOM CARDS */}
           <div>
