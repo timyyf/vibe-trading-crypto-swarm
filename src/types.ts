@@ -50,10 +50,10 @@ export interface KeyMetric {
 }
 
 export interface AgentReport {
-  agentId: 'technical' | 'sentiment' | 'whales' | 'alpha';
+  agentId: 'technical' | 'sentiment' | 'whales' | 'alpha' | 'orderbook' | 'risk';
   agentName: string;
   agentRole: string;
-  specialistType?: 'Técnico' | 'Analista de Sentimento' | 'Fundamentalista' | 'Quant Factor';
+  specialistType?: 'Técnico' | 'Analista de Sentimento' | 'Fundamentalista' | 'Quant Factor' | 'Liquidez & Orderbook' | 'Risk Manager';
   avatarIcon: string;
   opinion: TradeDecision;
   score: number; // 0-100

@@ -10,10 +10,22 @@ import { SystemWarningToast } from './components/SystemWarningToast';
 import { SystemDiagnosticModal } from './components/SystemDiagnosticModal';
 import { CryptoAsset, KlinePoint, WhaleTransaction, SwarmAnalysisResult, TradeJournalEntry, AlphaFactor, SystemDiagnosticResult } from './types';
 
+const DEFAULT_SEED_ASSETS: CryptoAsset[] = [
+  { id: 'bitcoin', symbol: 'BTC', name: 'Bitcoin', price: 96450, change24h: 2.45, volume24h: 38500000000, high24h: 97800, low24h: 95100, marketCap: 1900000000000, rank: 1, category: 'Layer 1' },
+  { id: 'ethereum', symbol: 'ETH', name: 'Ethereum', price: 2750, change24h: 1.82, volume24h: 18200000000, high24h: 2820, low24h: 2690, marketCap: 330000000000, rank: 2, category: 'Layer 1' },
+  { id: 'solana', symbol: 'SOL', name: 'Solana', price: 198.4, change24h: 4.15, volume24h: 8900000000, high24h: 204, low24h: 189, marketCap: 94000000000, rank: 3, category: 'Layer 1' },
+  { id: 'pepe', symbol: 'PEPE', name: 'Pepe', price: 0.0000185, change24h: 14.20, volume24h: 4200000000, high24h: 0.0000192, low24h: 0.0000158, marketCap: 7800000000, rank: 4, category: 'Meme' },
+  { id: 'sui', symbol: 'SUI', name: 'Sui', price: 3.42, change24h: 11.80, volume24h: 3100000000, high24h: 3.55, low24h: 3.02, marketCap: 9800000000, rank: 5, category: 'Layer 1' },
+  { id: 'ripple', symbol: 'XRP', name: 'XRP', price: 2.50, change24h: -0.85, volume24h: 6200000000, high24h: 2.62, low24h: 2.42, marketCap: 142000000000, rank: 6, category: 'Layer 1' },
+  { id: 'near', symbol: 'NEAR', name: 'NEAR Protocol', price: 6.15, change24h: -9.40, volume24h: 1950000000, high24h: 6.85, low24h: 6.02, marketCap: 7200000000, rank: 7, category: 'AI & Data' },
+  { id: 'binancecoin', symbol: 'BNB', name: 'BNB', price: 650.2, change24h: 0.95, volume24h: 1800000000, high24h: 662, low24h: 642, marketCap: 95000000000, rank: 8, category: 'Layer 1' },
+  { id: 'dogecoin', symbol: 'DOGE', name: 'Dogecoin', price: 0.265, change24h: 5.40, volume24h: 3100000000, high24h: 0.28, low24h: 0.25, marketCap: 38000000000, rank: 9, category: 'Meme' },
+];
+
 export default function App() {
   const [activeTab, setActiveTab] = useState<string>('swarm');
-  const [assets, setAssets] = useState<CryptoAsset[]>([]);
-  const [selectedAsset, setSelectedAsset] = useState<CryptoAsset | null>(null);
+  const [assets, setAssets] = useState<CryptoAsset[]>(DEFAULT_SEED_ASSETS);
+  const [selectedAsset, setSelectedAsset] = useState<CryptoAsset | null>(DEFAULT_SEED_ASSETS[0]);
   
   const [chartTimeframe, setChartTimeframe] = useState<'5m' | '15m' | '1h'>('5m');
   const [klines, setKlines] = useState<KlinePoint[]>([]);
@@ -80,12 +92,17 @@ export default function App() {
     }
   };
 
-  // Initial Data Fetch
+  // Initial Data Fetch & Continuous Price Stream (3s Polling)
   useEffect(() => {
-    fetchTopAssets();
+    fetchTopAssets(false);
     fetchAlphaFactors();
-  }, []);
 
+    const priceSyncInterval = setInterval(() => {
+      fetchTopAssets(true);
+    }, 3000);
+
+    return () => clearInterval(priceSyncInterval);
+  }, []);
 
   // Fetch Klines & Whales whenever selected asset or chartTimeframe changes
   useEffect(() => {
@@ -95,8 +112,8 @@ export default function App() {
     }
   }, [selectedAsset?.symbol, chartTimeframe]);
 
-  const fetchTopAssets = async () => {
-    setLoadingAssets(true);
+  const fetchTopAssets = async (isSilent = false) => {
+    if (!isSilent) setLoadingAssets(true);
     try {
       const res = await fetch('/api/crypto/top');
       const contentType = res.headers.get('content-type') || '';
@@ -105,15 +122,21 @@ export default function App() {
       }
       const json = await res.json();
       if (json.success && json.data.length > 0) {
-        setAssets(json.data);
-        if (!selectedAsset) {
-          setSelectedAsset(json.data[0]);
-        }
+        const freshAssets: CryptoAsset[] = json.data;
+        setAssets(freshAssets);
+
+        // Keep selectedAsset synced in real-time with updated price & stats
+        setSelectedAsset((prev) => {
+          if (!prev) return freshAssets[0];
+          const updatedMatch = freshAssets.find((a) => a.symbol === prev.symbol || a.id === prev.id);
+          return updatedMatch || prev;
+        });
       }
     } catch (err) {
-      console.error('Failed to load top assets:', err);
+      console.warn('Notice: temporary network issue fetching top assets:', err);
+      setAssets((prev) => (prev.length > 0 ? prev : DEFAULT_SEED_ASSETS));
     } finally {
-      setLoadingAssets(false);
+      if (!isSilent) setLoadingAssets(false);
     }
   };
 
@@ -276,6 +299,7 @@ export default function App() {
                 isLoading={loadingSwarm}
                 onRunSwarm={handleRunSwarmAnalysis}
                 onAddToJournal={handleAddToJournal}
+                onSwarmResultUpdated={(result) => setSwarmResult(result)}
               />
             )}
 
@@ -304,7 +328,7 @@ export default function App() {
             )}
 
             {activeTab === 'alpha' && (
-              <AlphaZooPanel factors={alphaFactors} symbol={activeSymbol} />
+              <AlphaZooPanel factors={alphaFactors} symbol={activeSymbol} selectedAsset={selectedAsset} />
             )}
 
             {activeTab === 'journal' && (

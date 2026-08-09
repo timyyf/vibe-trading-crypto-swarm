@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { CryptoAsset, SwarmAnalysisResult, TradeJournalEntry, TradeDecision } from '../types';
+import { CryptoAsset, SwarmAnalysisResult, TradeJournalEntry, TradeDecision, AgentReport } from '../types';
 import { AgentStatusControlPanel } from './AgentStatusControlPanel';
 import { SwarmDebugModal } from './SwarmDebugModal';
 import {
@@ -34,7 +34,65 @@ interface SwarmMeetingRoomProps {
   isLoading: boolean;
   onRunSwarm: (symbol: string, durationMinutes: number) => void;
   onAddToJournal: (entry: Omit<TradeJournalEntry, 'id' | 'timestamp'>) => void;
+  onSwarmResultUpdated?: (result: SwarmAnalysisResult) => void;
 }
+
+const ALL_SPECIALIST_AGENTS = [
+  {
+    agentId: 'technical',
+    agentName: 'Dr. Quant Graph',
+    agentRole: 'Análise Técnica Quantitativa Multi-Timeframe',
+    specialistType: 'Técnico',
+    icon: TrendingUp,
+    badgeColor: 'border-cyan-500/40 text-cyan-400 bg-cyan-500/10',
+    desc: 'Análise de confluência multi-timeframe (15m, 1h, 4h, 1d) com MACD, StochRSI, ADX, Bollinger, VWAP e Candlesticks...',
+  },
+  {
+    agentId: 'sentiment',
+    agentName: 'Sofia Sentiment',
+    agentRole: 'Psicologia de Mercado, FinBERT Social & Funding Rates',
+    specialistType: 'Analista de Sentimento',
+    icon: MessageSquare,
+    badgeColor: 'border-amber-500/40 text-amber-400 bg-amber-500/10',
+    desc: 'Analisando Fear & Greed 30d/90d, FinBERT NLP (Reddit/X), Google Trends, Funding Rate de Perpétuos e Liquidation Heatmap...',
+  },
+  {
+    agentId: 'orderbook',
+    agentName: 'OrderBook Sentinel',
+    agentRole: 'Microestrutura de Mercado, OBI L2, Volume Delta & Slippage',
+    specialistType: 'Especialista em Liquidez',
+    icon: Sliders,
+    badgeColor: 'border-sky-500/40 text-sky-400 bg-sky-500/10',
+    desc: 'Analisando Order Book Imbalance (OBI L2), Volume Profile (POC), CVD / Delta Volume Net, Paredes de Liquidez e Slippage...',
+  },
+  {
+    agentId: 'whales',
+    agentName: 'Whale Tracker Apex',
+    agentRole: 'Inteligência On-Chain, Clustering de Baleias, Netflows & MVRV/SOPR',
+    specialistType: 'Fundamentalista',
+    icon: ShieldAlert,
+    badgeColor: 'border-purple-500/40 text-purple-400 bg-purple-500/10',
+    desc: 'Auditando Exchange Netflow USD, Whale Ratio (>0.85), Inflows de Stablecoins, MVRV, SOPR e Clusters de Baleias (>3 dias)...',
+  },
+  {
+    agentId: 'alpha',
+    agentName: 'Alpha Zoo Engine',
+    agentRole: 'GTJA-191 & Alpha101, Walk-Forward, Neutralização Beta & HMM Regime',
+    specialistType: 'Quant Factor',
+    icon: Cpu,
+    badgeColor: 'border-emerald-500/40 text-emerald-400 bg-emerald-500/10',
+    desc: 'Analisando GTJA-191 / Alpha101, IC 5d, Walk-Forward (90d/7d com taxas 0.1%), Beta-Hedging e Regime HMM...',
+  },
+  {
+    agentId: 'risk',
+    agentName: 'Risk Protocol Officer',
+    agentRole: 'Alocação Fractional Kelly, VaR 95%, CVaR, Vol-Targeting & Poder de Veto',
+    specialistType: 'Risk Manager',
+    icon: Shield,
+    badgeColor: 'border-rose-500/40 text-rose-400 bg-rose-500/10',
+    desc: 'Auditando RRR (>= 1:2.0), ATR(14)x2 Stop Loss, Fractional Kelly (0.5x), VaR 95%, Stress Test (-15%) e Veto de Capital...',
+  },
+];
 
 export const SwarmMeetingRoom: React.FC<SwarmMeetingRoomProps> = ({
   selectedAsset,
@@ -44,6 +102,7 @@ export const SwarmMeetingRoom: React.FC<SwarmMeetingRoomProps> = ({
   isLoading,
   onRunSwarm,
   onAddToJournal,
+  onSwarmResultUpdated,
 }) => {
   const [durationMinutes, setDurationMinutes] = useState<number>(5);
   const [remainingSeconds, setRemainingSeconds] = useState<number>(0);
@@ -56,34 +115,43 @@ export const SwarmMeetingRoom: React.FC<SwarmMeetingRoomProps> = ({
   const [roomViewMode, setRoomViewMode] = useState<'CONTROL_PANEL' | 'CONSENSUS_ROOM'>('CONTROL_PANEL');
   const [isDebugModalOpen, setIsDebugModalOpen] = useState<boolean>(false);
 
-  // Loading animation step progress effect
+  // Real-time Partial Streaming States
+  const [streamingAgents, setStreamingAgents] = useState<AgentReport[]>([]);
+  const [isStreaming, setIsStreaming] = useState<boolean>(false);
+  const [activeAgentIndex, setActiveAgentIndex] = useState<number>(-1);
+
+  // Fallback Loading animation if streaming is not used
   useEffect(() => {
-    if (!isLoading) {
+    if (!isLoading && !isStreaming) {
       setLoadingProgress(0);
       return;
     }
 
-    setLoadingProgress(15);
-    setCurrentStepText(`Coletando métricas e klines para ${selectedAsset.symbol}...`);
+    if (isLoading && !isStreaming) {
+      setLoadingProgress(15);
+      setCurrentStepText(`Coletando métricas e klines para ${selectedAsset.symbol}...`);
 
-    const steps = [
-      { pct: 30, text: `1/4: Dr. Quant Graph calculando EMA20, SMA50 e oscilador RSI de ${selectedAsset.symbol}...` },
-      { pct: 55, text: `2/4: Sofia Sentiment auditando fóruns Reddit, CryptoNews e índice Fear & Greed...` },
-      { pct: 75, text: `3/4: Whale Tracker Apex rastreando entradas/saídas e blocos >$100k...` },
-      { pct: 92, text: `4/4: Gemini 3.6 sintetizando consenso do comitê Vibe-Trading...` },
-    ];
+      const steps = [
+        { pct: 25, text: `1/6: Dr. Quant Graph calculando EMA20, SMA50 e oscilador RSI...` },
+        { pct: 40, text: `2/6: Sofia Sentiment auditando Reddit, CryptoNews e Fear & Greed...` },
+        { pct: 55, text: `3/6: OrderBook Sentinel analisando profundidade e spread spot...` },
+        { pct: 70, text: `4/6: Whale Tracker Apex rastreando transações em bloco >$100k...` },
+        { pct: 85, text: `5/6: Alpha Zoo Engine simulando fatores quantitativos GTJA-191...` },
+        { pct: 95, text: `6/6: Risk Protocol Officer calculando parâmetros de RRR e Stop Loss...` },
+      ];
 
-    let stepIdx = 0;
-    const interval = setInterval(() => {
-      if (stepIdx < steps.length) {
-        setLoadingProgress(steps[stepIdx].pct);
-        setCurrentStepText(steps[stepIdx].text);
-        stepIdx++;
-      }
-    }, 180);
+      let stepIdx = 0;
+      const interval = setInterval(() => {
+        if (stepIdx < steps.length) {
+          setLoadingProgress(steps[stepIdx].pct);
+          setCurrentStepText(steps[stepIdx].text);
+          stepIdx++;
+        }
+      }, 200);
 
-    return () => clearInterval(interval);
-  }, [isLoading, selectedAsset.symbol]);
+      return () => clearInterval(interval);
+    }
+  }, [isLoading, isStreaming, selectedAsset.symbol]);
 
   const isNeutral = Boolean(
     swarmResult &&
@@ -91,7 +159,7 @@ export const SwarmMeetingRoom: React.FC<SwarmMeetingRoomProps> = ({
     swarmResult.finalDecision !== 'VENDER'
   );
 
-  // Countdown timer effect with dynamic entry recalibration
+  // Countdown timer effect
   useEffect(() => {
     if (!swarmResult) return;
 
@@ -105,7 +173,6 @@ export const SwarmMeetingRoom: React.FC<SwarmMeetingRoomProps> = ({
       const activeDurationMins = swarmResult.recommendedDurationMinutes || swarmResult.signalDurationMinutes;
       const baseDurationMs = (activeDurationMins * 60 * 1000) + (extendedSeconds * 1000);
       
-      // If user marked trade entry, calculate safe window starting from entry time
       let targetExpiry = (swarmResult.timestamp + activeDurationMins * 60 * 1000) + (extendedSeconds * 1000);
       if (tradeEntryTimestamp) {
         targetExpiry = tradeEntryTimestamp + baseDurationMs;
@@ -120,13 +187,94 @@ export const SwarmMeetingRoom: React.FC<SwarmMeetingRoomProps> = ({
     return () => clearInterval(interval);
   }, [swarmResult, tradeEntryTimestamp, extendedSeconds, isNeutral]);
 
-  const handleStartAnalysis = () => {
+  // Real-Time SSE Stream Executor for Partial Agent Conclusions
+  const handleStartAnalysis = async () => {
     setAddedToJournal(false);
     setTradeEntryTimestamp(null);
     setExtendedSeconds(0);
     setExtensionNotice(null);
     setRoomViewMode('CONSENSUS_ROOM');
-    onRunSwarm(selectedAsset.symbol, durationMinutes);
+
+    setIsStreaming(true);
+    setStreamingAgents([]);
+    setLoadingProgress(8);
+    setCurrentStepText(`Conectando transmissão do comitê para ${selectedAsset.symbol}...`);
+    setActiveAgentIndex(0);
+
+    try {
+      const res = await fetch('/api/swarm/stream', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          symbol: selectedAsset.symbol,
+          name: selectedAsset.name,
+          price: selectedAsset.price,
+          change24h: selectedAsset.change24h,
+          volume24h: selectedAsset.volume24h,
+          high24h: selectedAsset.high24h,
+          low24h: selectedAsset.low24h,
+          signalDurationMinutes: durationMinutes,
+        }),
+      });
+
+      if (!res.ok || !res.body) {
+        throw new Error('Endpoint de streaming não retornou stream de dados.');
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder('utf-8');
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (trimmed.startsWith('data: ')) {
+            try {
+              const event = JSON.parse(trimmed.slice(6));
+
+              if (event.type === 'init') {
+                setLoadingProgress(15);
+                setCurrentStepText(`Comitê ativado. 6 Especialistas transmitindo análises em tempo real...`);
+              } else if (event.type === 'agent_partial') {
+                const partialAgent: AgentReport = event.agent;
+                setStreamingAgents((prev) => {
+                  const idx = prev.findIndex((a) => a.agentId === partialAgent.agentId);
+                  if (idx !== -1) {
+                    const copy = [...prev];
+                    copy[idx] = partialAgent;
+                    return copy;
+                  }
+                  return [...prev, partialAgent];
+                });
+                setActiveAgentIndex(event.agentIndex + 1);
+                setCurrentStepText(`Especialista ${event.agentIndex + 1}/${event.totalAgents}: ${partialAgent.agentName} concluiu parecer parcial!`);
+                setLoadingProgress(Math.min(95, Math.round(((event.agentIndex + 1) / event.totalAgents) * 80 + 15)));
+              } else if (event.type === 'final_consensus') {
+                setLoadingProgress(100);
+                setCurrentStepText(`Consenso final do comitê sintetizado com sucesso!`);
+                if (onSwarmResultUpdated) {
+                  onSwarmResultUpdated(event.data);
+                }
+              }
+            } catch (err) {
+              console.error('Erro ao decodificar evento SSE:', err);
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.warn('Fallback para requisição padrão:', err);
+      onRunSwarm(selectedAsset.symbol, durationMinutes);
+    } finally {
+      setIsStreaming(false);
+    }
   };
 
   // User explicitly clicks "Entrei no Trade Agora"
@@ -190,6 +338,9 @@ export const SwarmMeetingRoom: React.FC<SwarmMeetingRoomProps> = ({
         return <ShieldAlert className="w-5 h-5 text-purple-400" />;
       case 'Cpu':
         return <Cpu className="w-5 h-5 text-emerald-400" />;
+      case 'Shield':
+      case 'ShieldCheck':
+        return <Shield className="w-5 h-5 text-rose-400" />;
       default:
         return <Bot className="w-5 h-5 text-cyan-400" />;
     }
@@ -334,9 +485,9 @@ export const SwarmMeetingRoom: React.FC<SwarmMeetingRoomProps> = ({
         lastAnalysisResult={swarmResult}
       />
 
-      {/* Active Loading Banner */}
-      {isLoading && (
-        <div className="bg-[#121417] border border-emerald-500/40 rounded-lg p-4 space-y-4 animate-fadeIn shadow-xl shadow-emerald-500/5 relative overflow-hidden">
+      {/* Active Loading & Real-time Partial Results Streaming Banner */}
+      {(isLoading || isStreaming) && (
+        <div className="bg-[#121417] border border-emerald-500/40 rounded-lg p-4 space-y-4 animate-fadeIn shadow-xl shadow-emerald-500/10 relative overflow-hidden">
           {/* Scanning gradient animation line */}
           <div className="absolute inset-0 bg-gradient-to-r from-transparent via-emerald-500/10 to-transparent animate-pulse pointer-events-none" />
 
@@ -347,17 +498,17 @@ export const SwarmMeetingRoom: React.FC<SwarmMeetingRoomProps> = ({
                 <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-ping" />
                 <h3 className="text-xs font-mono font-bold text-white uppercase tracking-wider flex items-center gap-2">
                   <Sparkles className="w-4 h-4 text-emerald-400" />
-                  <span>SALA DE REUNIÃO DO COMITÊ EM ANDAMENTO...</span>
+                  <span>TRANSMISSÃO AO VIVO DO COMITÊ SWARM (6 ESPECIALISTAS)</span>
                 </h3>
               </div>
               <p className="text-xs text-[#9CA3AF] font-mono">
-                O modelo <span className="text-white font-bold">Gemini 3.6</span> e a engine Swarm estão gerando consenso para <span className="text-emerald-400 font-bold">{selectedAsset.symbol}/USDT</span> (${selectedAsset.price.toLocaleString()}).
+                Sistemas alimentados pelo <span className="text-white font-bold">Gemini 3.6</span>. Exibindo conclusões parciais dos agentes em tempo real para <span className="text-emerald-400 font-bold">{selectedAsset.symbol}/USDT</span> (${selectedAsset.price.toLocaleString()}).
               </p>
             </div>
 
             <div className="flex items-center gap-2 bg-[#0A0B0D] px-3 py-1.5 rounded border border-emerald-500/30 font-mono text-xs text-emerald-400">
               <div className="w-3.5 h-3.5 border-2 border-emerald-400 border-t-transparent rounded-full animate-spin" />
-              <span>Analisando Parâmetros ({durationMinutes}m)</span>
+              <span>Streaming em Andamento ({durationMinutes}m)</span>
             </div>
           </div>
 
@@ -368,85 +519,113 @@ export const SwarmMeetingRoom: React.FC<SwarmMeetingRoomProps> = ({
                 <Zap className="w-3.5 h-3.5 text-emerald-400 animate-pulse" />
                 <span>{currentStepText}</span>
               </span>
-              <span className="text-white font-bold font-mono">{loadingProgress}%</span>
+              <span className="text-white font-bold font-mono">{loadingProgress || 15}%</span>
             </div>
             <div className="w-full bg-[#0A0B0D] h-2 rounded overflow-hidden border border-[#24272C]">
               <div
-                className="bg-gradient-to-r from-emerald-600 to-emerald-400 h-full transition-all duration-500"
-                style={{ width: `${loadingProgress}%` }}
+                className="bg-gradient-to-r from-emerald-600 via-cyan-500 to-emerald-400 h-full transition-all duration-300"
+                style={{ width: `${loadingProgress || 15}%` }}
               />
             </div>
           </div>
 
-          {/* 4 Active Agent Visual Cards */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
-            {/* Agent 1 */}
-            <div className="bg-[#1C1F24] p-3 rounded border border-cyan-500/30 space-y-2 relative overflow-hidden">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <TrendingUp className="w-4 h-4 text-cyan-400" />
-                  <span className="text-xs font-bold text-white font-mono">Dr. Quant Graph</span>
-                </div>
-                <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-cyan-500/10 text-cyan-400 border border-cyan-500/30 flex items-center gap-1">
-                  <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse" />
-                  Kline 5m
-                </span>
-              </div>
-              <p className="text-[10px] text-[#9CA3AF] font-mono leading-relaxed">
-                Calculando suporte em ${selectedAsset.low24h}, EMA20, SMA50 e oscilador RSI...
-              </p>
-            </div>
+          {/* 6 Specialist Real-Time Cards Matrix */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            {ALL_SPECIALIST_AGENTS.map((spec, idx) => {
+              const SpecIcon = spec.icon;
+              const partialAgent = streamingAgents.find((a) => a.agentId === spec.agentId) || swarmResult?.agents.find((a) => a.agentId === spec.agentId);
+              const isProcessing = (isStreaming || isLoading) && !partialAgent && (activeAgentIndex === idx || activeAgentIndex === -1);
 
-            {/* Agent 2 */}
-            <div className="bg-[#1C1F24] p-3 rounded border border-amber-500/30 space-y-2 relative overflow-hidden">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <MessageSquare className="w-4 h-4 text-amber-400" />
-                  <span className="text-xs font-bold text-white font-mono">Sofia Sentiment</span>
-                </div>
-                <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/30 flex items-center gap-1">
-                  <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
-                  Social Log
-                </span>
-              </div>
-              <p className="text-[10px] text-[#9CA3AF] font-mono leading-relaxed">
-                Auditando menções no Reddit (r/{selectedAsset.symbol}), notícias e Fear & Greed...
-              </p>
-            </div>
+              return (
+                <div
+                  key={spec.agentId}
+                  className={`p-3.5 rounded-lg border transition-all space-y-2.5 relative overflow-hidden ${
+                    partialAgent
+                      ? 'bg-[#161A1E] border-emerald-500/50 shadow-md shadow-emerald-500/5'
+                      : isProcessing
+                      ? 'bg-[#1C2128] border-cyan-400/70 animate-pulse shadow-lg shadow-cyan-500/10'
+                      : 'bg-[#121417] border-[#24272C] opacity-60'
+                  }`}
+                >
+                  {/* Top Header */}
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <SpecIcon className="w-4 h-4 text-emerald-400" />
+                      <div>
+                        <span className="text-xs font-bold text-white font-mono block">{spec.agentName}</span>
+                        <span className="text-[9px] text-[#9CA3AF] font-mono block">{spec.specialistType}</span>
+                      </div>
+                    </div>
 
-            {/* Agent 3 */}
-            <div className="bg-[#1C1F24] p-3 rounded border border-purple-500/30 space-y-2 relative overflow-hidden">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <ShieldAlert className="w-4 h-4 text-purple-400" />
-                  <span className="text-xs font-bold text-white font-mono">Whale Tracker</span>
-                </div>
-                <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-purple-500/10 text-purple-400 border border-purple-500/30 flex items-center gap-1">
-                  <span className="w-1.5 h-1.5 rounded-full bg-purple-400 animate-pulse" />
-                  On-Chain
-                </span>
-              </div>
-              <p className="text-[10px] text-[#9CA3AF] font-mono leading-relaxed">
-                Rastreando transferências de baleias &gt;$100k e fluxo de corretoras...
-              </p>
-            </div>
+                    {partialAgent ? (
+                      <span className="text-[9px] font-mono px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 font-bold flex items-center gap-1">
+                        <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+                        CONCLUÍDO
+                      </span>
+                    ) : isProcessing ? (
+                      <span className="text-[9px] font-mono px-2 py-0.5 rounded bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 font-bold flex items-center gap-1">
+                        <div className="w-2 h-2 border-2 border-cyan-400 border-t-transparent rounded-full animate-spin" />
+                        ANALISANDO...
+                      </span>
+                    ) : (
+                      <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-[#1C1F24] text-[#6B7280]">
+                        AGUARDANDO
+                      </span>
+                    )}
+                  </div>
 
-            {/* Agent 4 */}
-            <div className="bg-[#1C1F24] p-3 rounded border border-emerald-500/30 space-y-2 relative overflow-hidden">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <Cpu className="w-4 h-4 text-emerald-400" />
-                  <span className="text-xs font-bold text-white font-mono">Alpha Zoo Engine</span>
+                  {/* Partial Content or Processing Status */}
+                  {partialAgent ? (
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span
+                          className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded border ${
+                            partialAgent.opinion === 'COMPRAR'
+                              ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40'
+                              : partialAgent.opinion === 'VENDER'
+                              ? 'bg-rose-500/20 text-rose-400 border-rose-500/40'
+                              : 'bg-amber-500/20 text-amber-400 border-amber-500/40'
+                          }`}
+                        >
+                          PARECER: {partialAgent.opinion}
+                        </span>
+                        <span className="text-[10px] font-mono text-emerald-400 font-bold">
+                          {partialAgent.score}% Confiança
+                        </span>
+                      </div>
+
+                      <p className="text-[11px] text-slate-200 font-mono leading-relaxed bg-[#0A0B0D] p-2 rounded border border-[#24272C]">
+                        {partialAgent.summary}
+                      </p>
+
+                      {/* Key Metrics Badges */}
+                      {partialAgent.keyMetrics && partialAgent.keyMetrics.length > 0 && (
+                        <div className="flex flex-wrap gap-1 pt-1">
+                          {partialAgent.keyMetrics.map((m, mIdx) => (
+                            <span
+                              key={mIdx}
+                              className={`text-[9px] font-mono px-1.5 py-0.5 rounded border ${
+                                m.status === 'positive'
+                                  ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30'
+                                  : m.status === 'negative'
+                                  ? 'bg-rose-500/10 text-rose-300 border-rose-500/30'
+                                  : 'bg-[#1C1F24] text-[#9CA3AF] border-[#24272C]'
+                              }`}
+                            >
+                              {m.label}: {m.value}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <p className="text-[10px] text-[#9CA3AF] font-mono leading-relaxed">
+                      {spec.desc}
+                    </p>
+                  )}
                 </div>
-                <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 flex items-center gap-1">
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                  Factor Zoo
-                </span>
-              </div>
-              <p className="text-[10px] text-[#9CA3AF] font-mono leading-relaxed">
-                Rodando backtest de fatores GTJA191 e Alpha101 em janelas históricas...
-              </p>
-            </div>
+              );
+            })}
           </div>
         </div>
       )}
@@ -708,9 +887,9 @@ export const SwarmMeetingRoom: React.FC<SwarmMeetingRoomProps> = ({
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              {swarmResult.agents.map((agent) => (
+              {swarmResult.agents.map((agent, idx) => (
                 <div
-                  key={agent.agentId}
+                  key={`${agent.agentId}-${idx}`}
                   className="bg-[#121417] border border-[#24272C] hover:border-[#374151] rounded-lg p-3 space-y-2.5 transition-colors"
                 >
                   {/* Agent Card Header */}

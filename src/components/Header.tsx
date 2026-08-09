@@ -38,9 +38,12 @@ export const Header: React.FC<HeaderProps> = ({
           </div>
           <div className="h-4 w-px bg-[#24272C] hidden sm:block"></div>
           <div className="hidden lg:flex items-center gap-3 text-[10px] font-mono uppercase tracking-wider text-[#6B7280]">
-            <span>DeepSeek-V3 Active</span>
+            <span className="flex items-center gap-1.5 text-emerald-400 font-bold bg-emerald-500/10 border border-emerald-500/30 px-2 py-0.5 rounded">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping"></span>
+              TEMPO REAL (3s)
+            </span>
             <span className={isHealthOk ? "text-emerald-400 font-semibold" : "text-amber-400 font-semibold"}>
-              ● {isHealthOk ? 'Synchronized' : 'Degraded Mode'}
+              ● {isHealthOk ? 'Sincronizado' : 'Modo Degradado'}
             </span>
           </div>
         </div>

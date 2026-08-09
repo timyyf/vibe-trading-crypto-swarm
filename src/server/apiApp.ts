@@ -203,6 +203,95 @@ app.post("/api/swarm/analyze", async (req, res) => {
   }
 });
 
+// Real-Time Specialist Agents Partial Results Streaming Endpoint (SSE)
+app.post("/api/swarm/stream", async (req, res) => {
+  try {
+    const { symbol, name, price, change24h, volume24h, high24h, low24h, signalDurationMinutes } = req.body;
+
+    if (!symbol || price === undefined) {
+      return res.status(400).json({ success: false, error: "Campos obrigatórios: symbol, price" });
+    }
+
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    if (typeof (res as any).flushHeaders === 'function') {
+      (res as any).flushHeaders();
+    }
+
+    const duration = parseInt(signalDurationMinutes || "5", 10);
+    const parsedPrice = parseFloat(price);
+    const parsedChange = parseFloat(change24h || "0");
+    const parsedVol = parseFloat(volume24h || "0");
+    const parsedHigh = parseFloat(high24h || price);
+    const parsedLow = parseFloat(low24h || price);
+
+    // 1. Emit INIT event
+    res.write(`data: ${JSON.stringify({
+      type: 'init',
+      symbol,
+      name: name || symbol,
+      price: parsedPrice,
+      timestamp: Date.now(),
+      totalAgents: 6,
+      message: `Comitê Swarm iniciado para ${symbol}. Transmitindo análises parciais dos 6 agentes em tempo real...`
+    })}\n\n`);
+
+    // 2. Perform swarm analysis (Gemini or Fallback)
+    const result = await analyzeCryptoWithSwarm(
+      symbol,
+      name || symbol,
+      parsedPrice,
+      parsedChange,
+      parsedVol,
+      parsedHigh,
+      parsedLow,
+      duration
+    );
+
+    const validation = validateAndSanitizeSwarmResponse(result);
+    const sanitizedResult = validation.sanitized;
+
+    // 3. Stream each specialist agent's partial conclusion sequentially
+    for (let i = 0; i < sanitizedResult.agents.length; i++) {
+      const agent = sanitizedResult.agents[i];
+      await new Promise(resolve => setTimeout(resolve, 280));
+      res.write(`data: ${JSON.stringify({
+        type: 'agent_partial',
+        agentIndex: i,
+        totalAgents: sanitizedResult.agents.length,
+        agent,
+        timestamp: Date.now()
+      })}\n\n`);
+    }
+
+    await new Promise(resolve => setTimeout(resolve, 200));
+
+    // 4. Emit FINAL CONSENSUS event
+    res.write(`data: ${JSON.stringify({
+      type: 'final_consensus',
+      data: sanitizedResult,
+      _debugSchemaValidation: {
+        valid: validation.valid,
+        errorsCount: validation.errors.length,
+        warningsCount: validation.warnings.length,
+        reports: validation.reports,
+      },
+      timestamp: Date.now()
+    })}\n\n`);
+
+    res.end();
+  } catch (err) {
+    console.error("Error streaming swarm analysis:", err);
+    if (!res.headersSent) {
+      res.status(500).json({ success: false, error: "Erro durante execução do streaming do comitê" });
+    } else {
+      res.write(`data: ${JSON.stringify({ type: 'error', error: "Falha na conexão do streaming" })}\n\n`);
+      res.end();
+    }
+  }
+});
+
 // Automated Unit Test Suite for /api/swarm/analyze Schema Validation
 app.get("/api/swarm/test", async (_req, res) => {
   try {

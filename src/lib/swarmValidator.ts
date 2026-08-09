@@ -203,8 +203,8 @@ export function validateAndSanitizeSwarmResponse(raw: any): ValidationResult {
     });
 
     sanitizedAgents = raw.agents.map((ag: any, idx: number) => {
-      const validAgentIds = ['technical', 'sentiment', 'whales', 'alpha'];
-      const agentId = validAgentIds.includes(ag?.agentId) ? ag.agentId : (['technical', 'sentiment', 'whales', 'alpha'][idx % 4] as any);
+      const validAgentIds = ['technical', 'sentiment', 'orderbook', 'whales', 'alpha', 'risk'];
+      const agentId = validAgentIds.includes(ag?.agentId) ? ag.agentId : (validAgentIds[idx % validAgentIds.length] as any);
       const agentName = typeof ag?.agentName === 'string' ? ag.agentName : `Agente ${idx + 1}`;
       const agentRole = typeof ag?.agentRole === 'string' ? ag.agentRole : 'Especialista de Mercado';
       const opinion = validDecisions.includes(ag?.opinion) ? ag.opinion : 'AGUARDAR / NEUTRO';
@@ -327,6 +327,20 @@ export function getDefaultAgents(): AgentReport[] {
       status: 'CONCLUÍDO',
     },
     {
+      agentId: 'orderbook',
+      agentName: 'DEPTH-ORDERBOOK',
+      agentRole: 'Livro de Ofertas & Microestrutura',
+      specialistType: 'Liquidez & Orderbook',
+      avatarIcon: 'Sliders',
+      opinion: 'AGUARDAR / NEUTRO',
+      score: 71,
+      summary: 'Spread spot comprimido e profundidade equilibrada.',
+      keyMetrics: [{ label: 'Bid/Ask Ratio', value: '1.02x', status: 'neutral' }],
+      signals: ['Spread equilibrado'],
+      processingTimeMs: 160,
+      status: 'CONCLUÍDO',
+    },
+    {
       agentId: 'whales',
       agentName: 'NEXUS-WHALE',
       agentRole: 'Rastreamento On-Chain & Baleias',
@@ -352,6 +366,20 @@ export function getDefaultAgents(): AgentReport[] {
       keyMetrics: [{ label: 'Sharpe Estimado', value: '1.45', status: 'neutral' }],
       signals: ['Ratio Sharpe baixo'],
       processingTimeMs: 190,
+      status: 'CONCLUÍDO',
+    },
+    {
+      agentId: 'risk',
+      agentName: 'RISK-OFFICER',
+      agentRole: 'Gerenciamento de Risco & Stops',
+      specialistType: 'Risk Manager',
+      avatarIcon: 'Shield',
+      opinion: 'AGUARDAR / NEUTRO',
+      score: 75,
+      summary: 'Parâmetros de risco sugerem prudência.',
+      keyMetrics: [{ label: 'Relação RRR', value: '1:2.0', status: 'neutral' }],
+      signals: ['Risco controlado'],
+      processingTimeMs: 155,
       status: 'CONCLUÍDO',
     },
   ];

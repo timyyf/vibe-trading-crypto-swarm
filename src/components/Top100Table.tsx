@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { CryptoAsset } from '../types';
-import { Search, Flame, ArrowUpDown, TrendingUp, TrendingDown, Bot, Sparkles } from 'lucide-react';
+import { Search, Flame, ArrowUpDown, TrendingUp, TrendingDown, Bot } from 'lucide-react';
 
 interface Top100TableProps {
   assets: CryptoAsset[];
@@ -8,9 +8,141 @@ interface Top100TableProps {
   selectedSymbol: string;
 }
 
+interface AssetRowProps {
+  asset: CryptoAsset;
+  isSelected: boolean;
+  maxVolume: number;
+  onSelectAsset: (asset: CryptoAsset, runSwarmImmediately?: boolean) => void;
+}
+
+const AssetRow: React.FC<AssetRowProps> = ({ asset, isSelected, maxVolume, onSelectAsset }) => {
+  const isPositive = asset.change24h >= 0;
+  const volPct = Math.min(100, Math.max(5, (asset.volume24h / maxVolume) * 100));
+  const isExtremeVolatile = Math.abs(asset.change24h) >= 8;
+
+  // Price flash animation state for real-time updates
+  const prevPriceRef = useRef<number>(asset.price);
+  const [flashType, setFlashType] = useState<'up' | 'down' | null>(null);
+
+  useEffect(() => {
+    if (prevPriceRef.current !== asset.price) {
+      if (asset.price > prevPriceRef.current) {
+        setFlashType('up');
+      } else if (asset.price < prevPriceRef.current) {
+        setFlashType('down');
+      }
+      prevPriceRef.current = asset.price;
+
+      const timer = setTimeout(() => {
+        setFlashType(null);
+      }, 1200);
+
+      return () => clearTimeout(timer);
+    }
+  }, [asset.price]);
+
+  return (
+    <tr
+      className={`hover:bg-[#1C1F24] transition-colors ${
+        isSelected ? 'bg-[#1A1D21] border-l-2 border-emerald-400' : ''
+      }`}
+    >
+      <td className="py-2 px-3 text-[#6B7280] font-mono">{asset.rank}</td>
+
+      <td className="py-2 px-3">
+        <div className="flex items-center gap-2.5">
+          <div className="w-7 h-7 rounded bg-[#1A1D21] border border-[#24272C] flex items-center justify-center font-bold text-emerald-400 text-[10px]">
+            {asset.symbol.substring(0, 3)}
+          </div>
+          <div>
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <span className="font-bold text-white text-xs">{asset.symbol}</span>
+              <span className="text-[#6B7280] text-[10px] font-sans">{asset.name}</span>
+            </div>
+            <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
+              <span className="text-[9px] text-[#9CA3AF] bg-[#0A0B0D] px-1 py-0.2 rounded border border-[#24272C]/50">
+                {asset.category}
+              </span>
+              {isExtremeVolatile && (
+                <span
+                  title={`Volatilidade Extrema 24h: ${asset.change24h > 0 ? '+' : ''}${asset.change24h.toFixed(2)}%`}
+                  className={`inline-flex items-center gap-1 text-[8.5px] font-mono font-extrabold px-1.5 py-0.5 rounded border shadow-sm transition-all ${
+                    asset.change24h >= 0
+                      ? 'bg-amber-500/20 text-amber-300 border-amber-500/50 shadow-amber-500/10'
+                      : 'bg-rose-500/20 text-rose-300 border-rose-500/50 shadow-rose-500/10'
+                  }`}
+                >
+                  <Flame className="w-2.5 h-2.5 text-amber-400 animate-pulse" />
+                  <span>EXTREME VOL ({asset.change24h > 0 ? '+' : ''}{asset.change24h.toFixed(1)}%)</span>
+                </span>
+              )}
+            </div>
+          </div>
+        </div>
+      </td>
+
+      {/* Price Column with Real-Time Green/Red Flashing CSS Transition */}
+      <td className="py-2 px-3 text-right font-bold text-white">
+        <span
+          className={`inline-block px-1.5 py-0.5 rounded font-mono transition-all duration-500 ${
+            flashType === 'up'
+              ? 'bg-emerald-500/25 text-emerald-300 border border-emerald-500/40 shadow-sm shadow-emerald-500/20 scale-105'
+              : flashType === 'down'
+              ? 'bg-rose-500/25 text-rose-300 border border-rose-500/40 shadow-sm shadow-rose-500/20 scale-105'
+              : 'bg-transparent text-white border border-transparent'
+          }`}
+        >
+          ${asset.price < 0.01 ? asset.price.toFixed(7) : asset.price.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+        </span>
+      </td>
+
+      <td className="py-2 px-3 text-right">
+        <div
+          className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-bold ${
+            isExtremeVolatile
+              ? isPositive
+                ? 'bg-amber-500/20 text-amber-300 border border-amber-500/50 shadow-sm shadow-amber-500/20'
+                : 'bg-rose-500/20 text-rose-300 border border-rose-500/50 shadow-sm shadow-rose-500/20'
+              : isPositive
+              ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+              : 'bg-rose-500/10 text-rose-400 border border-rose-500/20'
+          }`}
+        >
+          {isPositive ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
+          <span>
+            {isPositive ? '+' : ''}
+            {asset.change24h.toFixed(2)}%
+          </span>
+        </div>
+      </td>
+
+      <td className="py-2 px-3 text-right">
+        <div className="text-white font-medium">
+          ${(asset.volume24h / 1e6).toLocaleString('en-US', { maximumFractionDigits: 1 })}M
+        </div>
+        {/* Volume Bar */}
+        <div className="w-20 ml-auto bg-[#0A0B0D] h-1 rounded overflow-hidden mt-1 border border-[#24272C]">
+          <div className="bg-emerald-500 h-full" style={{ width: `${volPct}%` }}></div>
+        </div>
+      </td>
+
+      <td className="py-2 px-3 text-center">
+        <button
+          onClick={() => onSelectAsset(asset, true)}
+          className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-[#1C1F24] hover:bg-emerald-600 text-emerald-400 hover:text-white border border-[#24272C] text-[10px] uppercase font-bold transition-all"
+        >
+          <Bot className="w-3 h-3" />
+          <span>Swarm</span>
+        </button>
+      </td>
+    </tr>
+  );
+};
+
 export const Top100Table: React.FC<Top100TableProps> = ({ assets, onSelectAsset, selectedSymbol }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string>('Todos');
+  const [onlyExtremeVolatile, setOnlyExtremeVolatile] = useState<boolean>(false);
   const [sortField, setSortField] = useState<'volume24h' | 'change24h' | 'rank' | 'price'>('volume24h');
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc');
 
@@ -31,7 +163,8 @@ export const Top100Table: React.FC<Top100TableProps> = ({ assets, onSelectAsset,
         asset.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
         asset.symbol.toLowerCase().includes(searchTerm.toLowerCase());
       const matchesCategory = selectedCategory === 'Todos' || asset.category === selectedCategory;
-      return matchesSearch && matchesCategory;
+      const matchesExtremeVol = !onlyExtremeVolatile || Math.abs(asset.change24h) >= 8;
+      return matchesSearch && matchesCategory && matchesExtremeVol;
     })
     .sort((a, b) => {
       let valA = a[sortField];
@@ -72,8 +205,8 @@ export const Top100Table: React.FC<Top100TableProps> = ({ assets, onSelectAsset,
           </div>
         </div>
 
-        {/* Category Pills */}
-        <div className="flex flex-wrap gap-1 mt-3">
+        {/* Category Pills & Volatility Filter */}
+        <div className="flex flex-wrap items-center gap-1.5 mt-3">
           {categories.map((cat) => (
             <button
               key={cat}
@@ -87,6 +220,18 @@ export const Top100Table: React.FC<Top100TableProps> = ({ assets, onSelectAsset,
               {cat}
             </button>
           ))}
+
+          <button
+            onClick={() => setOnlyExtremeVolatile(!onlyExtremeVolatile)}
+            className={`px-2.5 py-0.5 rounded text-[10px] font-mono font-bold uppercase transition-all inline-flex items-center gap-1.5 ml-auto sm:ml-0 ${
+              onlyExtremeVolatile
+                ? 'bg-amber-500/20 text-amber-300 border border-amber-500/50 shadow-sm shadow-amber-500/20'
+                : 'bg-[#0A0B0D] text-[#9CA3AF] hover:text-white border border-[#24272C]'
+            }`}
+          >
+            <Flame className={`w-3 h-3 ${onlyExtremeVolatile ? 'text-amber-400 animate-pulse' : 'text-amber-500'}`} />
+            <span>Extrema Volatilidade (&ge;8%)</span>
+          </button>
         </div>
       </div>
 
@@ -124,75 +269,15 @@ export const Top100Table: React.FC<Top100TableProps> = ({ assets, onSelectAsset,
             </tr>
           </thead>
           <tbody className="divide-y divide-[#24272C]/60 text-xs font-mono">
-            {filteredAssets.map((asset) => {
-              const isSelected = asset.symbol === selectedSymbol;
-              const isPositive = asset.change24h >= 0;
-              const volPct = Math.min(100, Math.max(5, (asset.volume24h / maxVolume) * 100));
-
-              return (
-                <tr
-                  key={asset.id}
-                  className={`hover:bg-[#1C1F24] transition-colors ${
-                    isSelected ? 'bg-[#1A1D21] border-l-2 border-emerald-400' : ''
-                  }`}
-                >
-                  <td className="py-2 px-3 text-[#6B7280] font-mono">{asset.rank}</td>
-                  
-                  <td className="py-2 px-3">
-                    <div className="flex items-center gap-2.5">
-                      <div className="w-7 h-7 rounded bg-[#1A1D21] border border-[#24272C] flex items-center justify-center font-bold text-emerald-400 text-[10px]">
-                        {asset.symbol.substring(0, 3)}
-                      </div>
-                      <div>
-                        <div className="flex items-center gap-1.5">
-                          <span className="font-bold text-white text-xs">{asset.symbol}</span>
-                          <span className="text-[#6B7280] text-[10px] font-sans">{asset.name}</span>
-                        </div>
-                        <span className="text-[9px] text-[#9CA3AF] bg-[#0A0B0D] px-1 py-0.2 rounded">
-                          {asset.category}
-                        </span>
-                      </div>
-                    </div>
-                  </td>
-
-                  <td className="py-2 px-3 text-right font-bold text-white">
-                    ${asset.price < 0.01 ? asset.price.toFixed(7) : asset.price.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                  </td>
-
-                  <td className="py-2 px-3 text-right">
-                    <div className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-bold ${
-                      isPositive ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-rose-500/10 text-rose-400 border border-rose-500/20'
-                    }`}>
-                      {isPositive ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
-                      <span>{isPositive ? '+' : ''}{asset.change24h.toFixed(2)}%</span>
-                    </div>
-                  </td>
-
-                  <td className="py-2 px-3 text-right">
-                    <div className="text-white font-medium">
-                      ${(asset.volume24h / 1e6).toLocaleString('en-US', { maximumFractionDigits: 1 })}M
-                    </div>
-                    {/* Volume Bar */}
-                    <div className="w-20 ml-auto bg-[#0A0B0D] h-1 rounded overflow-hidden mt-1 border border-[#24272C]">
-                      <div
-                        className="bg-emerald-500 h-full"
-                        style={{ width: `${volPct}%` }}
-                      ></div>
-                    </div>
-                  </td>
-
-                  <td className="py-2 px-3 text-center">
-                    <button
-                      onClick={() => onSelectAsset(asset, true)}
-                      className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-[#1C1F24] hover:bg-emerald-600 text-emerald-400 hover:text-white border border-[#24272C] text-[10px] uppercase font-bold transition-all"
-                    >
-                      <Bot className="w-3 h-3" />
-                      <span>Swarm</span>
-                    </button>
-                  </td>
-                </tr>
-              );
-            })}
+            {filteredAssets.map((asset) => (
+              <AssetRow
+                key={asset.id}
+                asset={asset}
+                isSelected={asset.symbol === selectedSymbol}
+                maxVolume={maxVolume}
+                onSelectAsset={onSelectAsset}
+              />
+            ))}
           </tbody>
         </table>
       </div>

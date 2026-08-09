@@ -244,7 +244,7 @@ export const AgentStatusControlPanel: React.FC<AgentStatusControlPanelProps> = (
 
       {/* Specialist Agents Cards Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-        {filteredAgents.map((agent) => {
+        {filteredAgents.map((agent, idx) => {
           const latency = getAgentLatency(agent);
           const specTitle =
             agent.specialistType ||
@@ -261,7 +261,7 @@ export const AgentStatusControlPanel: React.FC<AgentStatusControlPanelProps> = (
 
           return (
             <div
-              key={agent.agentId}
+              key={`${agent.agentId}-${idx}`}
               className="bg-[#0A0B0D] border border-[#24272C] hover:border-[#374151] rounded-lg p-3 space-y-3 transition-all relative overflow-hidden"
             >
               {/* Agent Header */}
