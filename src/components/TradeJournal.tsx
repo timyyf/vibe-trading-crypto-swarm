@@ -1,6 +1,6 @@
 import React from 'react';
 import { TradeJournalEntry } from '../types';
-import { BookOpen, Clock, Download, CheckCircle, XCircle, Code, Shield } from 'lucide-react';
+import { BookOpen, Clock, Download, CheckCircle, XCircle, Code, Shield, TrendingUp, Target, Percent, Layers } from 'lucide-react';
 
 interface TradeJournalProps {
   entries: TradeJournalEntry[];
@@ -36,6 +36,29 @@ if (shortCondition)
     link.click();
   };
 
+  const pnlColor = (value: number) => (value >= 0 ? 'text-emerald-400' : 'text-rose-400');
+
+  const closed = entries.filter((e) => e.status === 'LUCRO' || e.status === 'PREJUÍZO');
+  const wins = closed.filter((e) => e.status === 'LUCRO').length;
+  const losses = closed.filter((e) => e.status === 'PREJUÍZO').length;
+  const openCount = entries.filter((e) => e.status === 'EM_ANDAMENTO').length;
+  const winRate = closed.length > 0 ? (wins / closed.length) * 100 : null;
+  const totalPnl = closed.reduce((acc, e) => acc + (e.pnlPercent ?? 0), 0);
+  const avgPnl = closed.length > 0 ? totalPnl / closed.length : null;
+  const symbolCounts = new Map<string, number>();
+  entries.forEach((e) => symbolCounts.set(e.symbol, (symbolCounts.get(e.symbol) ?? 0) + 1));
+  const topSymbols = [...symbolCounts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3);
+
+  const statCard = (icon: React.ReactNode, label: string, value: string, valueClass = 'text-white') => (
+    <div className="flex items-center gap-2.5 px-3 py-2.5 bg-[#1C1F24] border border-[#24272C] rounded-lg">
+      <span className="text-emerald-400 shrink-0">{icon}</span>
+      <div className="min-w-0">
+        <div className="text-[9px] font-mono font-bold text-[#9CA3AF] uppercase tracking-wider">{label}</div>
+        <div className={`text-sm font-mono font-bold ${valueClass} truncate`}>{value}</div>
+      </div>
+    </div>
+  );
+
   return (
     <div className="space-y-3">
       {/* Header Banner */}
@@ -58,6 +81,40 @@ if (shortCondition)
           <span>Export Pine Script v6</span>
         </button>
       </div>
+
+      {/* Performance Stats */}
+      {entries.length > 0 && (
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
+          {statCard(
+            <Target className="w-4 h-4" />,
+            'Win-rate',
+            winRate !== null ? `${winRate.toFixed(0)}%` : '—',
+            winRate !== null ? pnlColor(winRate - 50) : ''
+          )}
+          {statCard(
+            <TrendingUp className="w-4 h-4" />,
+            'PnL total',
+            totalPnl !== 0 ? `${totalPnl.toFixed(1)}%` : '0%',
+            pnlColor(totalPnl)
+          )}
+          {statCard(
+            <Percent className="w-4 h-4" />,
+            'PnL médio',
+            avgPnl !== null ? `${avgPnl.toFixed(1)}%` : '—',
+            avgPnl !== null ? pnlColor(avgPnl) : ''
+          )}
+          {statCard(
+            <Shield className="w-4 h-4" />,
+            'Fechados (L/L)',
+            `${closed.length} (${wins}/${losses})`
+          )}
+          {statCard(
+            <Layers className="w-4 h-4" />,
+            'Abertos • Top',
+            `${openCount} • ${topSymbols.map(([s]) => s).join(', ') || '—'}`
+          )}
+        </div>
+      )}
 
       {/* Journal Table */}
       <div className="bg-[#121417] border border-[#24272C] rounded-lg overflow-hidden">
@@ -141,6 +198,11 @@ if (shortCondition)
                         >
                           {entry.status}
                         </span>
+                        {entry.pnlPercent !== undefined && (
+                          <div className={`mt-0.5 text-[10px] font-bold ${pnlColor(entry.pnlPercent)}`}>
+                            {entry.pnlPercent >= 0 ? '+' : ''}{entry.pnlPercent.toFixed(1)}%
+                          </div>
+                        )}
                       </td>
 
                       <td className="py-2 px-3 text-center space-x-1">

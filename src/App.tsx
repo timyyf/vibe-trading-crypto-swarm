@@ -10,6 +10,20 @@ import { SystemWarningToast } from './components/SystemWarningToast';
 import { SystemDiagnosticModal } from './components/SystemDiagnosticModal';
 import { CryptoAsset, KlinePoint, WhaleOverview, SwarmAnalysisResult, TradeJournalEntry, AlphaFactor, SystemDiagnosticResult } from './types';
 
+const JOURNAL_STORAGE_KEY = 'vibe-swarm-journal';
+
+const loadJournalEntries = (): TradeJournalEntry[] => {
+  try {
+    const raw = localStorage.getItem(JOURNAL_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (err) {
+    console.warn('Falha ao ler diário de trades do localStorage:', err);
+    return [];
+  }
+};
+
 const DEFAULT_SEED_ASSETS: CryptoAsset[] = [
   { id: 'bitcoin', symbol: 'BTC', name: 'Bitcoin', price: 96450, change24h: 2.45, volume24h: 38500000000, high24h: 97800, low24h: 95100, marketCap: 1900000000000, rank: 1, category: 'Layer 1' },
   { id: 'ethereum', symbol: 'ETH', name: 'Ethereum', price: 2750, change24h: 1.82, volume24h: 18200000000, high24h: 2820, low24h: 2690, marketCap: 330000000000, rank: 2, category: 'Layer 1' },
@@ -33,7 +47,7 @@ export default function App() {
   const [alphaFactors, setAlphaFactors] = useState<AlphaFactor[]>([]);
 
   const [swarmResult, setSwarmResult] = useState<SwarmAnalysisResult | null>(null);
-  const [journalEntries, setJournalEntries] = useState<TradeJournalEntry[]>([]);
+  const [journalEntries, setJournalEntries] = useState<TradeJournalEntry[]>(loadJournalEntries);
   
   const [loadingAssets, setLoadingAssets] = useState<boolean>(true);
   const [loadingSwarm, setLoadingSwarm] = useState<boolean>(false);
@@ -53,6 +67,15 @@ export default function App() {
     }, 15000);
     return () => clearInterval(interval);
   }, []);
+
+  // Persist trade journal to localStorage whenever it changes
+  useEffect(() => {
+    try {
+      localStorage.setItem(JOURNAL_STORAGE_KEY, JSON.stringify(journalEntries));
+    } catch (err) {
+      console.warn('Falha ao salvar diário de trades no localStorage:', err);
+    }
+  }, [journalEntries]);
 
   const runSystemDiagnosticCheck = async (simulateAgent?: string, simulateDegraded?: boolean) => {
     setIsCheckingHealth(true);
@@ -251,7 +274,15 @@ export default function App() {
 
   const handleUpdateJournalStatus = (id: string, status: TradeJournalEntry['status']) => {
     setJournalEntries((prev) =>
-      prev.map((e) => (e.id === id ? { ...e, status } : e))
+      prev.map((e) => {
+        if (e.id !== id) return e;
+        if (status === 'EM_ANDAMENTO' || status === 'CANCELADO') return { ...e, status };
+        const base = status === 'LUCRO'
+          ? e.targetPrice / e.entryPrice - 1
+          : e.stopPrice / e.entryPrice - 1;
+        const pnlPercent = (e.type === 'VENDA' ? -base : base) * 100;
+        return { ...e, status, pnlPercent };
+      })
     );
   };
 
