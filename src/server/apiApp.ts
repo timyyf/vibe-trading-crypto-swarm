@@ -11,10 +11,33 @@ import { runAlphaZooEngine } from "./alphaZooEngine.js";
 import { runRiskProtocolOfficerEngine } from "./riskEngine.js";
 import { AgentDiagnostic } from "../types.js";
 import { swarmBodySchema, swarmAnalyzeLimiter, swarmTestLimiter, SwarmBody } from "./swarmSchema.js";
+import { ApiRequestLogEntry, buildDiagnostics } from "../lib/observability.js";
 
 const app = express();
 
 app.use(express.json());
+
+// --- OBSERVABILIDADE: log em memória de todas as requisições ---
+const requestLog: ApiRequestLogEntry[] = [];
+const REQUEST_LOG_MAX = 2000;
+const DIAGNOSTICS_START_TIME = Date.now();
+
+app.use((req, res, next) => {
+  const start = Date.now();
+  res.on("finish", () => {
+    const entry: ApiRequestLogEntry = {
+      method: req.method,
+      path: req.path.split("?")[0],
+      status: res.statusCode,
+      durationMs: Date.now() - start,
+      timestamp: Date.now(),
+    };
+    requestLog.push(entry);
+    if (requestLog.length > REQUEST_LOG_MAX) requestLog.shift();
+    console.log(`[api] ${entry.method} ${entry.path} ${entry.status} ${entry.durationMs}ms`);
+  });
+  next();
+});
 
 // Validação do corpo das rotas de comitê via zod (400 com detalhes quando inválido).
 function validateSwarmBody(req: express.Request, res: express.Response, next: express.NextFunction) {
@@ -530,6 +553,15 @@ app.get("/api/swarm/test", swarmTestLimiter, async (_req, res) => {
   } catch (err: any) {
     res.status(500).json({ success: false, error: err?.message || String(err) });
   }
+});
+
+// Observabilidade: diagnóstico agregado das requisições (count, p50, p95, breakdown por rota)
+app.get("/api/diagnostics", (_req, res) => {
+  const windowMs = 15 * 60 * 1000;
+  res.json({
+    success: true,
+    ...buildDiagnostics(requestLog, Date.now(), windowMs, DIAGNOSTICS_START_TIME),
+  });
 });
 
 export default app;
