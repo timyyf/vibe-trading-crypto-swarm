@@ -8,6 +8,7 @@ import { runAlphaZooEngine } from "./alphaZooEngine.js";
 import { runRiskProtocolOfficerEngine } from "./riskEngine.js";
 import { getCryptoKlines } from "./cryptoDataService.js";
 import { getWhaleOverview } from "./whaleDataService.js";
+import { computeWeightedVote } from "../lib/weightedVote.js";
 
 export async function analyzeCryptoWithSwarm(
   symbol: string,
@@ -370,21 +371,14 @@ async function fallbackSwarmAnalysis(
     riskOfficer.report,
   ];
 
-  const buyVotes = allAgents.filter((a) => a.opinion === 'COMPRAR').length;
-  const sellVotes = allAgents.filter((a) => a.opinion === 'VENDER').length;
-
-  // Decision & Quorum (At least 4/6 agents must agree AND Risk Officer must NOT veto)
-  let decision: TradeDecision = 'AGUARDAR / NEUTRO';
-  if (!riskOfficer.summary.isVetoedByRiskOfficer) {
-    if (buyVotes >= 4) {
-      decision = 'COMPRAR';
-    } else if (sellVotes >= 4) {
-      decision = 'VENDER';
-    }
-  }
+  // Votação ponderada: agentes DEGRADADO pesam 0.5 (quórum ajustado proporcionalmente).
+  const weightedVote = computeWeightedVote(allAgents, !!riskOfficer.summary.isVetoedByRiskOfficer);
+  const buyVotes = weightedVote.buyWeight;
+  const sellVotes = weightedVote.sellWeight;
+  const decision: TradeDecision = weightedVote.decision;
 
   const isNeutral = decision === 'AGUARDAR / NEUTRO';
-  const confidence = Math.min(96, Math.max(55, Math.round((Math.max(buyVotes, sellVotes) / 6) * 100)));
+  const confidence = weightedVote.confidenceScore;
 
   const entry = price;
   const stop = riskOfficer.summary.technicalStopLossUSD;
@@ -395,6 +389,9 @@ async function fallbackSwarmAnalysis(
   const isHighVolume = volume24h > 150000000;
   const isStrongTrend = Math.abs(change24h) >= 2.0;
 
+  // Formatação amigável dos pesos (3.5 -> "3.5", 4 -> "4")
+  const fmtWeight = (w: number) => (Number.isInteger(w) ? w.toString() : w.toFixed(1));
+
   let evaluatedDuration = durationMinutes;
   let durationReason = '';
 
@@ -402,7 +399,7 @@ async function fallbackSwarmAnalysis(
     evaluatedDuration = 0;
     durationReason = riskOfficer.summary.isVetoedByRiskOfficer
       ? `Comitê definiu 0 minutos de permanência devido ao VETO do Risk Officer (${riskOfficer.summary.vetoReason}).`
-      : `Comitê definiu 0 minutos de permanência pois o quórum mínimo (4/6 especialistas) não foi alcançado (${buyVotes} Compras / ${sellVotes} Vendas).`;
+      : `Comitê definiu 0 minutos de permanência pois o quórum ponderado mínimo (2/3 do peso total) não foi alcançado (${fmtWeight(buyVotes)} Compras / ${fmtWeight(sellVotes)} Vendas).`;
   } else if (priceSpreadPct > 4.5 || Math.abs(change24h) > 6.0) {
     evaluatedDuration = durationMinutes <= 3 ? 1 : 3;
     durationReason = `Comitê reduziu a permanência para ${evaluatedDuration}m (Micro-Scalp): A alta volatilidade e amplitude intraday (${priceSpreadPct.toFixed(1)}%) aumentam o risco de exaustão da kline. O trader deve realizar o lucro rápido antes de uma reação contrária.`;
@@ -432,9 +429,9 @@ async function fallbackSwarmAnalysis(
     riskRewardRatio: isNeutral ? 'N/A (NEUTRO)' : `1:${riskOfficer.summary.riskRewardRatio}`,
     summaryConsensus: isNeutral
       ? `O Comitê Vibe-Trading concluiu por AGUARDAR / NEUTRO em ${symbol}. ${riskOfficer.summary.isVetoedByRiskOfficer ? riskOfficer.summary.vetoReason : 'Quórum insuficiente de especialistas (requerido >= 4/6).'}`
-      : `O Comitê Vibe-Trading aprovou ${decision} em ${symbol} com quórum de ${Math.max(buyVotes, sellVotes)}/6 especialistas e sinal verde do Risk Protocol Officer.`,
+      : `O Comitê Vibe-Trading aprovou ${decision} em ${symbol} com peso de quórum ${fmtWeight(Math.max(buyVotes, sellVotes))}/${fmtWeight(weightedVote.totalWeight)} e sinal verde do Risk Protocol Officer.`,
     reasoningNotes: [
-      `Quórum dos Especialistas: ${buyVotes} Compras | ${sellVotes} Vendas | Quórum Mínimo: 4/6 (${decision}).`,
+      `Quórum ponderado dos Especialistas: ${fmtWeight(buyVotes)} Compras | ${fmtWeight(sellVotes)} Vendas | Peso total ${fmtWeight(weightedVote.totalWeight)} | Quórum Mínimo: 2/3 do peso (${decision}).`,
       `Dr. Quant Graph: ${drQuant.summary.confluenceCount} sinais confluentes (${drQuant.summary.candlestickPattern}).`,
       `Sofia Sentiment: Fear & Greed ${sofiaSentiment.summary.fearAndGreedCurrent ?? 'n/d'}/100 | Funding Rate: ${sofiaSentiment.summary.fundingRateBinancePercent ?? 'n/d'}% (${sofiaSentiment.summary.fundingRateStatus}).`,
       `OrderBook Sentinel: ${orderbookSentinel.summary ? `OBI L2 de ${orderbookSentinel.summary.orderBookImbalanceRatio > 0 ? '+' : ''}${orderbookSentinel.summary.orderBookImbalanceRatio} | Delta Vol $${(orderbookSentinel.summary.deltaVolumeNetUsd / 1e6).toFixed(1)}M | POC $${orderbookSentinel.summary.pocPriceUsd}.` : 'Book L2 indisponível (sem dados fabricados).'}`,
