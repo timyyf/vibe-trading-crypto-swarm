@@ -1,8 +1,8 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { SwarmAnalysisResult, TradeDecision } from "../types.js";
 import { runDrQuantGraphEngine } from "./quantEngine.js";
-import { runSofiaSentimentEngine } from "./sentimentEngine.js";
-import { runOrderBookSentinelEngine } from "./orderbookEngine.js";
+import { runSofiaSentimentEngine, buildDegradedSentimentReport } from "./sentimentEngine.js";
+import { runOrderBookSentinelEngine, fetchRealDepth } from "./orderbookEngine.js";
 import { runWhaleTrackerApexEngine } from "./whaleEngine.js";
 import { runAlphaZooEngine } from "./alphaZooEngine.js";
 import { runRiskProtocolOfficerEngine } from "./riskEngine.js";
@@ -260,6 +260,7 @@ Retorne obrigatoriamente no formato JSON em português com a seguinte estrutura:
         assetName: name,
         assetPrice: price,
         timestamp: now,
+        engineSource: 'gemini' as const,
         finalDecision: (parsed.finalDecision || 'AGUARDAR / NEUTRO') as TradeDecision,
         confidenceScore: parsed.confidenceScore ?? 75,
         signalDurationMinutes: isNeutralDecision ? 0 : signalDurationMinutes,
@@ -328,18 +329,36 @@ async function fallbackSwarmAnalysis(
 ): Promise<SwarmAnalysisResult> {
   const now = Date.now();
 
-  // Get real klines & execute Specialized Engines (dados reais, sem fabricação)
-  const klines = await getCryptoKlines(symbol, '15m', 40);
-  const drQuant = runDrQuantGraphEngine(symbol, price, change24h, volume24h, high24h, low24h, klines);
-  const sofiaSentiment = await runSofiaSentimentEngine(symbol, price, change24h, volume24h, high24h, low24h);
-  const orderbookSentinel = await runOrderBookSentinelEngine(symbol, price, change24h, volume24h, high24h, low24h, klines);
-  const whaleSnapshot = await getWhaleOverview();
+  // Deadline para feeds externos: degrada honesto em vez de deixar o swarm lento.
+  const deadlineMs = 1500;
+  const withDeadline = <T>(promise: Promise<T>): Promise<T | null> =>
+    Promise.race([
+      promise.catch(() => null),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), deadlineMs)),
+    ]);
+
+  // Get real klines & external feeds in PARALELO (dados reais, sem fabricação).
+  // Cada feed respeita um deadline; quem estourar degrada (klines -> [], depth/whale -> null,
+  // sentiment -> relatório DEGRADADO honesto).
+  const [klines, sentimentRes, depth, whaleSnapshot] = await Promise.all([
+    withDeadline(getCryptoKlines(symbol, '15m', 40)),
+    withDeadline(runSofiaSentimentEngine(symbol, price, change24h, volume24h, high24h, low24h)),
+    withDeadline(fetchRealDepth(symbol)),
+    withDeadline(getWhaleOverview()),
+  ]);
+
+  const klinesSafe = klines ?? [];
+  const sofiaSentiment = sentimentRes ?? buildDegradedSentimentReport(symbol);
+
+  // Execute Specialized Engines (compute local rápido; depth já veio da rede acima)
+  const drQuant = runDrQuantGraphEngine(symbol, price, change24h, volume24h, high24h, low24h, klinesSafe);
+  const orderbookSentinel = await runOrderBookSentinelEngine(symbol, price, change24h, volume24h, high24h, low24h, klinesSafe, depth);
   const whaleApex = runWhaleTrackerApexEngine(symbol, price, change24h, volume24h, high24h, low24h, whaleSnapshot);
-  const alphaZoo = runAlphaZooEngine(symbol, price, change24h, volume24h, high24h, low24h, klines);
+  const alphaZoo = runAlphaZooEngine(symbol, price, change24h, volume24h, high24h, low24h, klinesSafe);
 
   // Preliminary direction before Risk Audit
   const preliminaryDirection: TradeDecision = change24h > 0.5 ? 'COMPRAR' : change24h < -2.0 ? 'VENDER' : 'AGUARDAR / NEUTRO';
-  const riskOfficer = runRiskProtocolOfficerEngine(symbol, price, change24h, volume24h, high24h, low24h, klines, preliminaryDirection);
+  const riskOfficer = runRiskProtocolOfficerEngine(symbol, price, change24h, volume24h, high24h, low24h, klinesSafe, preliminaryDirection);
 
   // Count quorum consensus across the 6 agents
   const allAgents = [
@@ -400,6 +419,7 @@ async function fallbackSwarmAnalysis(
     assetName: name,
     assetPrice: price,
     timestamp: now,
+    engineSource: 'fallback' as const,
     finalDecision: decision,
     confidenceScore: Math.round(confidence),
     signalDurationMinutes: isNeutral ? 0 : durationMinutes,

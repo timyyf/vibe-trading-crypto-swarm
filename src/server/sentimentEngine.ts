@@ -18,7 +18,7 @@ interface FundingApiResponse {
   lastFundingRate?: string;
 }
 
-async function fetchJson<T>(url: string, timeoutMs = 6000): Promise<T | null> {
+async function fetchJson<T>(url: string, timeoutMs = 2500): Promise<T | null> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -132,6 +132,10 @@ export async function runSofiaSentimentEngine(
     },
   ];
 
+  if (!hasRealData) {
+    return buildDegradedSentimentReport(symbol);
+  }
+
   const report: AgentReport = {
     agentId: 'sentiment',
     agentName: 'Sofia Sentiment',
@@ -140,13 +144,11 @@ export async function runSofiaSentimentEngine(
     avatarIcon: 'MessageSquare',
     opinion: decision,
     score: finalScore,
-    summary: hasRealData
-      ? `Sentimento de mercado real: Fear & Greed ${fearAndGreedCurrent !== null ? `${fearAndGreedCurrent}/100 (${fearAndGreedClassification})` : 'indisponível'} e Funding Rate ${funding !== null ? `${funding}%` : 'indisponível'}. Métricas sociais não monitoradas (sem fonte pública gratuita).`
-      : `Sentimento: fontes reais indisponíveis no momento. Nenhum número fabricado é exibido.`,
+    summary: `Sentimento de mercado real: Fear & Greed ${fearAndGreedCurrent !== null ? `${fearAndGreedCurrent}/100 (${fearAndGreedClassification})` : 'indisponível'} e Funding Rate ${funding !== null ? `${funding}%` : 'indisponível'}. Métricas sociais não monitoradas (sem fonte pública gratuita).`,
     keyMetrics,
     signals: signalsList.slice(0, 4),
     processingTimeMs: Date.now() % 1000,
-    status: hasRealData ? 'CONCLUÍDO' : 'DEGRADADO',
+    status: 'CONCLUÍDO',
   };
 
   const summaryObj: SentimentAnalysisSummary = {
@@ -156,8 +158,55 @@ export async function runSofiaSentimentEngine(
     fundingRateStatus: fundingStatus,
     compositeScore: finalScore,
     opinion: decision,
-    realData: hasRealData,
+    realData: true,
   };
 
   return { report, summary: summaryObj };
+}
+
+/**
+ * Relatório DEGRADADO honesto — usado quando as fontes reais não respondem
+ * dentro do deadline (sem números fabricados).
+ */
+export function buildDegradedSentimentReport(symbol: string): {
+  report: AgentReport;
+  summary: SentimentAnalysisSummary;
+} {
+  const keyMetrics: KeyMetric[] = [
+    { label: 'Fear & Greed Index (real)', value: 'Não monitorado', status: 'neutral' },
+    { label: 'Funding Rate (Binance 8h)', value: 'Não monitorado', status: 'neutral' },
+    { label: 'Sentimento Social / NLP', value: 'Não monitorado (sem fonte real)', status: 'neutral' },
+    { label: 'Google Trends', value: 'Não monitorado (sem fonte real)', status: 'neutral' },
+  ];
+
+  const report: AgentReport = {
+    agentId: 'sentiment',
+    agentName: 'Sofia Sentiment',
+    agentRole: 'Head de Sentimento de Mercado & Psicologia',
+    specialistType: 'Analista de Sentimento',
+    avatarIcon: 'MessageSquare',
+    opinion: 'AGUARDAR / NEUTRO',
+    score: 50,
+    summary: `Sentimento: fontes reais indisponíveis para ${symbol} no momento. Nenhum número fabricado é exibido.`,
+    keyMetrics,
+    signals: [
+      'Fear & Greed Index: fonte indisponível no momento (timeout).',
+      'Funding Rate: fonte indisponível no momento (timeout).',
+      'Métricas sociais (FinBERT/Google Trends/Reddit): não monitoradas — sem fonte pública gratuita.',
+    ],
+    processingTimeMs: Date.now() % 1000,
+    status: 'DEGRADADO',
+  };
+
+  const summary: SentimentAnalysisSummary = {
+    fearAndGreedCurrent: null,
+    fearAndGreedClassification: 'Não monitorado',
+    fundingRateBinancePercent: null,
+    fundingRateStatus: 'Não monitorado',
+    compositeScore: 50,
+    opinion: 'AGUARDAR / NEUTRO',
+    realData: false,
+  };
+
+  return { report, summary };
 }

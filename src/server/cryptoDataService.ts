@@ -142,6 +142,60 @@ async function fetchWithTimeout(url: string, timeoutMs: number): Promise<Respons
   }
 }
 
+// Cache de market caps reais do CoinGecko (símbolo -> market_cap USD).
+// Se a fonte falhar, o fallback mantém a estimativa aproximada (volume * 15.4).
+let marketCapCache: { map: Map<string, number>; fetchedAt: number } | null = null;
+let marketCapFetchInFlight: Promise<void> | null = null;
+const MARKET_CAP_CACHE_TTL_MS = 5 * 60 * 1000;
+const MARKET_CAP_FETCH_TIMEOUT_MS = 2500;
+
+// Busca em background (fire-and-forget): atualiza o cache, sem bloquear a resposta.
+async function refreshMarketCapMap(): Promise<void> {
+  if (marketCapFetchInFlight) return marketCapFetchInFlight;
+  marketCapFetchInFlight = (async () => {
+    const map = new Map<string, number>();
+    try {
+      const res = await fetchWithTimeout(
+        'https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=250&page=1&sparkline=false',
+        MARKET_CAP_FETCH_TIMEOUT_MS
+      );
+      if (res.ok) {
+        const data: any[] = await res.json();
+        for (const item of data) {
+          const symbol = (item?.symbol || '').toUpperCase();
+          const mc = parseFloat(item?.market_cap);
+          if (symbol && !Number.isNaN(mc) && mc > 0) map.set(symbol, mc);
+        }
+      }
+    } catch (_err) {
+      // mantém cache anterior se existir; senão o enriquecimento fica no fallback aproximado
+    }
+    if (map.size > 0) {
+      marketCapCache = { map, fetchedAt: Date.now() };
+    }
+  })().finally(() => {
+    marketCapFetchInFlight = null;
+  });
+  return marketCapFetchInFlight;
+}
+
+// Garante que a busca em background esteja disparada quando o cache estiver ausente/expirado.
+function ensureMarketCapBackground(): void {
+  const now = Date.now();
+  if (marketCapCache && now - marketCapCache.fetchedAt < MARKET_CAP_CACHE_TTL_MS) return;
+  void refreshMarketCapMap();
+}
+
+// Enriquece com caps reais SÓ do cache — nunca bloqueia em rede.
+function enrichAssetsWithCachedMarketCap(assets: CryptoAsset[]): CryptoAsset[] {
+  if (assets.length === 0 || !marketCapCache) return assets;
+  for (const a of assets) {
+    const realMc = marketCapCache.map.get(a.symbol);
+    if (realMc) a.marketCap = realMc;
+  }
+  return assets;
+}
+
 // Top 100 por volume 24h — apenas provedores reais (Binance -> Vision -> CoinGecko).
 // Se todos falharem, retorna vazio (a UI mostra estado 'dados indisponíveis').
 export async function getTop100CryptoAssets(): Promise<CryptoAsset[]> {
@@ -154,7 +208,10 @@ export async function getTop100CryptoAssets(): Promise<CryptoAsset[]> {
       usdtPairs.sort((a, b) => parseFloat(b.quoteVolume) - parseFloat(a.quoteVolume));
       const topPairs = usdtPairs.slice(0, 100);
       const assets = topPairs.map(mapBinancePair);
-      if (assets.length >= 20) return assets;
+      if (assets.length >= 20) {
+        ensureMarketCapBackground();
+        return enrichAssetsWithCachedMarketCap(assets);
+      }
     }
   } catch (_err) {
     // try backup provider
@@ -169,7 +226,10 @@ export async function getTop100CryptoAssets(): Promise<CryptoAsset[]> {
       usdtPairs.sort((a, b) => parseFloat(b.quoteVolume) - parseFloat(a.quoteVolume));
       const topPairs = usdtPairs.slice(0, 100);
       const assets = topPairs.map(mapBinancePair);
-      if (assets.length >= 20) return assets;
+      if (assets.length >= 20) {
+        ensureMarketCapBackground();
+        return enrichAssetsWithCachedMarketCap(assets);
+      }
     }
   } catch (_err) {
     // try backup provider

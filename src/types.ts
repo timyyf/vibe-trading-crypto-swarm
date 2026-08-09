@@ -56,6 +56,7 @@ export interface SwarmAnalysisResult {
   assetName: string;
   assetPrice: number;
   timestamp: number;
+  engineSource?: 'gemini' | 'fallback';
   finalDecision: TradeDecision;
   confidenceScore: number;
   signalDurationMinutes: number;

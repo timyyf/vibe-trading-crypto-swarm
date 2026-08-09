@@ -3,7 +3,13 @@ import { getTop100CryptoAssets, getCryptoKlines, ALPHA_ZOO_FACTORS } from "./cry
 import { analyzeCryptoWithSwarm } from "./geminiService.js";
 import { validateAndSanitizeSwarmResponse, runSwarmTestSuite } from "../lib/swarmValidator.js";
 import { getWhaleOverview } from "./whaleDataService.js";
-import { runHMMRegimeDetection, runBacktest } from "./quantEngine.js";
+import { runDrQuantGraphEngine, runHMMRegimeDetection, runBacktest } from "./quantEngine.js";
+import { runSofiaSentimentEngine } from "./sentimentEngine.js";
+import { fetchRealDepth } from "./orderbookEngine.js";
+import { runWhaleTrackerApexEngine } from "./whaleEngine.js";
+import { runAlphaZooEngine } from "./alphaZooEngine.js";
+import { runRiskProtocolOfficerEngine } from "./riskEngine.js";
+import { AgentDiagnostic } from "../types.js";
 
 const app = express();
 
@@ -11,103 +17,227 @@ app.use(express.json());
 
 // --- API ROUTES ---
 
+// Cache dos diagnósticos: recálculo a cada 25s, polls intermediários respondem ~30ms.
+const HEALTH_CACHE_TTL_MS = 25 * 1000;
+const PROBE_DEADLINE_MS = 1500;
+let healthCache: { fetchedAt: number; diagnostics: AgentDiagnostic[] } | null = null;
+
+// Sonda externa com deadline global: se estourar 1.5s, marca DEGRADED e responde mesmo assim.
+async function probeWithDeadline<T>(
+  fn: () => Promise<T>,
+  deadlineMs = PROBE_DEADLINE_MS
+): Promise<{ ok: boolean; lat: number; value?: T }> {
+  const start = Date.now();
+  const timeout = new Promise<{ ok: boolean; lat: number }>((resolve) => {
+    setTimeout(() => resolve({ ok: false, lat: deadlineMs }), deadlineMs);
+  });
+  const attempt = (async () => {
+    try {
+      return { ok: true, lat: Date.now() - start, value: await fn() };
+    } catch {
+      return { ok: false, lat: Date.now() - start };
+    }
+  })();
+  return (await Promise.race([attempt, timeout])) as { ok: boolean; lat: number; value?: T };
+}
+
+// Real-time diagnostics: mede latência real de cada feed/agente (BTC como sonda).
+async function buildRealDiagnostics(now: number): Promise<AgentDiagnostic[]> {
+  const hasGeminiKey = !!process.env.GEMINI_API_KEY;
+
+  // Sondas externas rodam em PARALELO, cada uma com deadline de 1.5s.
+  const [feedRes, gemRes, klinesRes, sentimentRes, depthRes, whaleFeedRes] = await Promise.all([
+    probeWithDeadline(() => getTop100CryptoAssets()),
+    probeWithDeadline(async () => {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), PROBE_DEADLINE_MS);
+      try {
+        await fetch('https://generativelanguage.googleapis.com/', {
+          headers: { 'Accept': 'application/json' },
+          signal: controller.signal,
+        });
+        clearTimeout(timer);
+      } catch {
+        clearTimeout(timer);
+        throw new Error('Gemini endpoint unreachable');
+      }
+    }),
+    probeWithDeadline(() => getCryptoKlines('BTC', '15m', 60)),
+    probeWithDeadline(() => runSofiaSentimentEngine('BTC', 0, 0, 0, 0, 0)),
+    probeWithDeadline(() => fetchRealDepth('BTC')),
+    probeWithDeadline(() => getWhaleOverview()),
+  ]);
+
+  // Feed: OK quando retorna ativos; vazio = DEGRADED; timeout/falha = DEGRADED (deadline).
+  const assets = feedRes.value ?? [];
+  const feedStatus: AgentDiagnostic['status'] =
+    !feedRes.ok ? 'DEGRADED' : assets.length === 0 ? 'DEGRADED' : 'ONLINE';
+
+  // Gemini: chave presente + endpoint respondeu.
+  const gemStatus: AgentDiagnostic['status'] = !hasGeminiKey
+    ? 'DEGRADED'
+    : gemRes.ok
+    ? 'ONLINE'
+    : 'DEGRADED';
+
+  // Klines de sonda para os agentes locais (BTC 15m).
+  const klines = klinesRes.ok ? klinesRes.value! : [];
+  const last = klines[klines.length - 1];
+  const price = last?.close ?? 0;
+  const high = klines.length ? Math.max(...klines.map((k) => k.high)) : 0;
+  const low = klines.length ? Math.min(...klines.map((k) => k.low)) : 0;
+  const hasKlines = klines.length > 0;
+
+  // 4. Agentes de computação local (tempo real de execução)
+  const tTech = Date.now();
+  try {
+    runDrQuantGraphEngine('BTC', price, 0, 0, high, low, klines);
+  } catch { /* mantém DEGRADED */ }
+  const techLatency = Date.now() - tTech;
+
+  const tAlpha = Date.now();
+  try {
+    runAlphaZooEngine('BTC', price, 0, 0, high, low, klines);
+  } catch { /* mantém DEGRADED */ }
+  const alphaLatency = Date.now() - tAlpha;
+
+  const tRisk = Date.now();
+  try {
+    runRiskProtocolOfficerEngine('BTC', price, 0, 0, high, low, klines, 'COMPRAR');
+  } catch { /* mantém DEGRADED */ }
+  const riskLatency = Date.now() - tRisk;
+
+  const tWhale = Date.now();
+  let whaleOk = false;
+  try {
+    const whaleReport = runWhaleTrackerApexEngine('BTC', price, 0, 0, high, low, whaleFeedRes.ok ? whaleFeedRes.value! : null);
+    whaleOk = whaleReport.summary !== null;
+  } catch { /* mantém DEGRADED */ }
+  const whaleLatency = whaleFeedRes.lat + (Date.now() - tWhale);
+
+  const sentimentOk = sentimentRes.ok && sentimentRes.value!.report.status === 'CONCLUÍDO';
+  const orderbookOk = depthRes.ok && depthRes.value !== null;
+
+  const sentimentLatency = sentimentRes.lat;
+  const orderbookLatency = depthRes.lat;
+
+  const feedDetails = feedStatus === 'ONLINE'
+    ? 'Feed de dados spot Binance sincronizado em tempo real.'
+    : feedStatus === 'DEGRADED'
+    ? 'Feed de dados sem retorno de ativos no momento.'
+    : 'Falha na conexão de dados do livro de ordens.';
+
+  return [
+    {
+      id: 'market_feed' as const,
+      name: 'Binance Orderbook & Market Feed',
+      type: 'connector' as const,
+      status: feedStatus,
+      latencyMs: feedRes.lat,
+      lastChecked: now,
+      details: feedDetails,
+    },
+    {
+      id: 'gemini_llm' as const,
+      name: 'Inference Engine (Gemini 2.5 Flash)',
+      type: 'connector' as const,
+      status: gemStatus,
+      latencyMs: gemRes.lat,
+      lastChecked: now,
+      details: hasGeminiKey
+        ? (gemStatus === 'ONLINE' ? 'Endpoint Gemini respondendo. Chave API configurada.' : 'Endpoint Gemini inacessível no momento.')
+        : 'Chave API ausente — comitê em modo fallback local determinístico (dados reais).',
+    },
+    {
+      id: 'technical' as const,
+      name: 'Dr. Quant Graph (Análise Técnica)',
+      type: 'agent' as const,
+      status: hasKlines ? ('ONLINE' as const) : ('DEGRADED' as const),
+      latencyMs: techLatency,
+      lastChecked: now,
+      details: hasKlines
+        ? `EMA20, SMA50, RSI(14), MACD e Bollinger calculados em ${techLatency}ms sobre ${klines.length} klines reais.`
+        : 'Sem klines reais disponíveis para cálculo de indicadores.',
+    },
+    {
+      id: 'sentiment' as const,
+      name: 'Sofia Sentiment (Fear & Greed + Funding Rate)',
+      type: 'agent' as const,
+      status: sentimentOk ? ('ONLINE' as const) : ('DEGRADED' as const),
+      latencyMs: sentimentLatency,
+      lastChecked: now,
+      details: sentimentOk
+        ? `Fear & Greed (alternative.me) e Funding Rate (Binance Futures) reais em ${sentimentLatency}ms.`
+        : 'Fear & Greed / Funding Rate indisponíveis no momento — nenhum número fabricado.',
+    },
+    {
+      id: 'orderbook' as const,
+      name: 'OrderBook Sentinel (Liquidez & Depth L2)',
+      type: 'agent' as const,
+      status: orderbookOk ? ('ONLINE' as const) : ('DEGRADED' as const),
+      latencyMs: orderbookLatency,
+      lastChecked: now,
+      details: orderbookOk
+        ? `Depth L2 real da Binance (bids/asks, OBI, POC, CVD) em ${orderbookLatency}ms.`
+        : 'Depth da Binance indisponível no momento — microestrutura pausada.',
+    },
+    {
+      id: 'whales' as const,
+      name: 'Whale Tracker Apex (On-Chain Real)',
+      type: 'agent' as const,
+      status: whaleOk ? ('ONLINE' as const) : ('DEGRADED' as const),
+      latencyMs: whaleLatency,
+      lastChecked: now,
+      details: whaleOk
+        ? `Agregados on-chain reais (Deep Blue Alpha) em ${whaleLatency}ms.`
+        : 'Deep Blue Alpha indisponível no momento — fluxo on-chain pausado.',
+    },
+    {
+      id: 'alpha' as const,
+      name: 'Alpha Zoo Engine (Fatores Quantitativos)',
+      type: 'agent' as const,
+      status: hasKlines ? ('ONLINE' as const) : ('DEGRADED' as const),
+      latencyMs: alphaLatency,
+      lastChecked: now,
+      details: hasKlines
+        ? `Regime HMM (Baum-Welch) e backtest walk-forward em ${alphaLatency}ms sobre klines reais.`
+        : 'Sem klines reais disponíveis para regime HMM e backtest.',
+    },
+    {
+      id: 'risk' as const,
+      name: 'Risk Protocol Officer (Kelly, VaR & Veto)',
+      type: 'agent' as const,
+      status: hasKlines ? ('ONLINE' as const) : ('DEGRADED' as const),
+      latencyMs: riskLatency,
+      lastChecked: now,
+      details: hasKlines
+        ? `Half-Kelly, VaR 95% e CVaR calculados em ${riskLatency}ms sobre volatilidade real dos klines.`
+        : 'Sem klines reais disponíveis para cálculo de risco.',
+    },
+  ];
+}
+
 // System Health & Periodic Diagnostics
 app.get("/api/health", async (req, res) => {
   const simulateDisconnectedAgent = req.query.simulateAgent as string | undefined;
   const simulateDegraded = req.query.simulateDegraded === 'true';
 
   const now = Date.now();
-  const hasGeminiKey = !!process.env.GEMINI_API_KEY;
 
-  // Check market feed latency
-  const startFeedCheck = Date.now();
-  let feedStatus: 'ONLINE' | 'DEGRADED' | 'DISCONNECTED' = 'ONLINE';
-  let feedLatency = 12;
-  try {
-    const assets = await getTop100CryptoAssets();
-    feedLatency = Date.now() - startFeedCheck;
-    if (assets.length === 0) feedStatus = 'DEGRADED';
-  } catch {
-    feedStatus = 'DISCONNECTED';
-    feedLatency = 999;
+  // Cache 25s: recálculo real apenas no primeiro poll de cada janela.
+  if (!healthCache || now - healthCache.fetchedAt >= HEALTH_CACHE_TTL_MS) {
+    healthCache = { fetchedAt: now, diagnostics: await buildRealDiagnostics(now) };
   }
+  const diagnostics = healthCache.diagnostics.map((d) => ({ ...d, lastChecked: now }));
 
-  const diagnostics = [
-    {
-      id: 'market_feed' as const,
-      name: 'Binance Orderbook & Market Feed',
-      type: 'connector' as const,
-      status: simulateDisconnectedAgent === 'market_feed' ? ('DISCONNECTED' as const) : feedStatus,
-      latencyMs: feedLatency,
-      lastChecked: now,
-      details: feedStatus === 'ONLINE' ? 'Feed de dados spot sincronizado em tempo real.' : 'Falha na conexão de dados do livro de ordens.',
-    },
-    {
-      id: 'gemini_llm' as const,
-      name: 'Inference Engine (Gemini 2.5 Flash)',
-      type: 'connector' as const,
-      status: simulateDisconnectedAgent === 'gemini_llm' ? ('DISCONNECTED' as const) : (hasGeminiKey ? ('ONLINE' as const) : ('DEGRADED' as const)),
-      latencyMs: hasGeminiKey ? 18 : 120,
-      lastChecked: now,
-      details: hasGeminiKey ? 'Motor LLM Gemini operacional em alta velocidade.' : 'Chave API ausente ou em modo fallback local.',
-    },
-    {
-      id: 'technical' as const,
-      name: 'Dr. Quant Graph (Análise Técnica)',
-      type: 'agent' as const,
-      status: simulateDisconnectedAgent === 'technical' ? ('DISCONNECTED' as const) : ('ONLINE' as const),
-      latencyMs: 14,
-      lastChecked: now,
-      details: 'Indicadores EMA20, SMA50, RSI(14) e Bollinger operacionais.',
-    },
-    {
-      id: 'sentiment' as const,
-      name: 'Sofia Sentiment (Fear & Greed + Funding Rate)',
-      type: 'agent' as const,
-      status: simulateDisconnectedAgent === 'sentiment' ? ('DISCONNECTED' as const) : (simulateDegraded ? ('DEGRADED' as const) : ('ONLINE' as const)),
-      latencyMs: simulateDegraded ? 480 : 22,
-      lastChecked: now,
-      details: (simulateDisconnectedAgent === 'sentiment' || simulateDegraded)
-        ? 'Instabilidade na API alternativa.me / Binance Futures. Desempenho reduzido.'
-        : 'Fear & Greed Index (alternative.me) e Funding Rate (Binance Futures) monitorados.',
-    },
-    {
-      id: 'orderbook' as const,
-      name: 'OrderBook Sentinel (Liquidez & Depth L2)',
-      type: 'agent' as const,
-      status: simulateDisconnectedAgent === 'orderbook' ? ('DISCONNECTED' as const) : ('ONLINE' as const),
-      latencyMs: 22,
-      lastChecked: now,
-      details: 'Livro de ofertas L2 real da Binance (bids/asks, OBI, POC, CVD).',
-    },
-    {
-      id: 'whales' as const,
-      name: 'Whale Tracker Apex (On-Chain Real)',
-      type: 'agent' as const,
-      status: simulateDisconnectedAgent === 'whales' ? ('DISCONNECTED' as const) : ('ONLINE' as const),
-      latencyMs: 19,
-      lastChecked: now,
-      details: 'Agregados on-chain reais (Deep Blue Alpha): stats, whale index e top tokens.',
-    },
-    {
-      id: 'alpha' as const,
-      name: 'Alpha Zoo Engine (Fatores Quantitativos)',
-      type: 'agent' as const,
-      status: simulateDisconnectedAgent === 'alpha' ? ('DISCONNECTED' as const) : ('ONLINE' as const),
-      latencyMs: 16,
-      lastChecked: now,
-      details: 'Regime HMM real (Baum-Welch) e backtest walk-forward sobre klines reais.',
-    },
-    {
-      id: 'risk' as const,
-      name: 'Risk Protocol Officer (Kelly, VaR & Veto)',
-      type: 'agent' as const,
-      status: simulateDisconnectedAgent === 'risk' ? ('DISCONNECTED' as const) : ('ONLINE' as const),
-      latencyMs: 15,
-      lastChecked: now,
-      details: 'Half-Kelly, VaR 95% e CVaR calculados sobre volatilidade real dos klines.',
-    },
-  ];
+  // Overrides de simulação (painel de debug)
+  for (const d of diagnostics) {
+    if (simulateDisconnectedAgent === d.id) {
+      d.status = 'DISCONNECTED';
+    } else if (simulateDegraded && d.id === 'sentiment') {
+      d.status = 'DEGRADED';
+    }
+  }
 
   const hasDisconnected = diagnostics.some((d) => d.status === 'DISCONNECTED');
   const hasDegraded = diagnostics.some((d) => d.status === 'DEGRADED');

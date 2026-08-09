@@ -39,7 +39,7 @@ interface TopTokensResponse {
   }[];
 }
 
-async function fetchJson<T>(url: string, timeoutMs = 8000): Promise<T | null> {
+async function fetchJson<T>(url: string, timeoutMs = 2500): Promise<T | null> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {

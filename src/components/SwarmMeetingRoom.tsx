@@ -652,6 +652,15 @@ export const SwarmMeetingRoom: React.FC<SwarmMeetingRoomProps> = ({
                   <div className="flex items-center gap-1.5">
                     <Users className="w-3.5 h-3.5 text-emerald-400" />
                     <span>Swarm Consensus Engine</span>
+                    {swarmResult.engineSource === 'gemini' ? (
+                      <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-violet-500/20 text-violet-300 border border-violet-500/40 font-bold">
+                        Gemini API
+                      </span>
+                    ) : (
+                      <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40 font-bold">
+                        Fallback Local (sem chave Gemini)
+                      </span>
+                    )}
                   </div>
                   {swarmResult.recommendedDurationMinutes !== undefined && !isNeutral && (
                     <div className="flex items-center gap-1">

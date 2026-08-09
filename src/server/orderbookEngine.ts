@@ -37,7 +37,7 @@ export interface OrderBookAnalysisSummary {
   opinion: TradeDecision;
 }
 
-interface RealDepth {
+export interface RealDepth {
   bids: OrderBookDepthLevel[];
   asks: OrderBookDepthLevel[];
   bestBid: number;
@@ -45,7 +45,7 @@ interface RealDepth {
   fetchedAt: number;
 }
 
-async function fetchRealDepth(symbol: string): Promise<RealDepth | null> {
+export async function fetchRealDepth(symbol: string): Promise<RealDepth | null> {
   const pair = symbol.endsWith('USDT') ? symbol : `${symbol}USDT`;
 
   const tryFetch = async (baseUrl: string): Promise<RealDepth | null> => {
@@ -100,9 +100,10 @@ export async function runOrderBookSentinelEngine(
   volume24h: number,
   high24h: number,
   low24h: number,
-  klines: KlinePoint[]
+  klines: KlinePoint[],
+  depthOverride?: RealDepth | null
 ): Promise<{ report: AgentReport; summary: OrderBookAnalysisSummary | null }> {
-  const realDepth = await fetchRealDepth(symbol);
+  const realDepth = depthOverride !== undefined ? depthOverride : await fetchRealDepth(symbol);
   const priceRef = price || klines[klines.length - 1]?.close || 0;
 
   if (!realDepth || !priceRef) {
