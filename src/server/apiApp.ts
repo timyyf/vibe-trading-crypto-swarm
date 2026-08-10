@@ -22,7 +22,16 @@ import {
   isPrecedentInjectionEnabled,
   recordDecision,
   recordJournalEntry,
+  recordMirofishDecision,
 } from "./semanticaClient.js";
+import {
+  computeReview,
+  getStatus as getMirofishStatus,
+  listScenarios,
+  listWorlds,
+  loadWorld,
+  runReplay,
+} from "./mirofishService.js";
 
 const app = express();
 
@@ -484,6 +493,19 @@ app.post("/api/swarm/analyze", swarmAnalyzeLimiter, validateSwarmBody, async (re
       if (semanticaDecisionId) console.log(`[semantica] decisão gravada: ${semanticaDecisionId}`);
     }
 
+    // Registra o ensaio MiroFish no grafo + link INFLUENCED para a decisão do comitê.
+    if (validation.sanitized?.mirofishReview) {
+      void recordMirofishDecision(
+        validation.sanitized.assetSymbol,
+        validation.sanitized.mirofishReview,
+        semanticaDecisionId
+      )
+        .then((mirofishId) => {
+          if (mirofishId) console.log(`[semantica] mirofish gravado: ${mirofishId}`);
+        })
+        .catch(() => {});
+    }
+
     res.json({
       success: true,
       data: validation.sanitized,
@@ -561,10 +583,10 @@ app.post("/api/swarm/stream", swarmAnalyzeLimiter, validateSwarmBody, async (req
     const sanitizedResult = validation.sanitized;
 
     // Grava a decisão no grafo Semantica (fire-and-forget; não bloqueia o streaming)
+    let semanticaDecisionId: string | null = null;
     if (sanitizedResult) {
-      void recordDecision(sanitizedResult).then((decisionId) => {
-        if (decisionId) console.log(`[semantica] decisão gravada: ${decisionId}`);
-      }).catch(() => {});
+      semanticaDecisionId = await recordDecision(sanitizedResult).catch(() => null);
+      if (semanticaDecisionId) console.log(`[semantica] decisão gravada: ${semanticaDecisionId}`);
     }
 
     // 3. Stream each specialist agent's partial conclusion sequentially
@@ -581,6 +603,22 @@ app.post("/api/swarm/stream", swarmAnalyzeLimiter, validateSwarmBody, async (req
     }
 
     await new Promise(resolve => setTimeout(resolve, 200));
+
+    // 3.5 Evento SSE da revisão MiroFish (simulação de apoio — nunca decide)
+    if (sanitizedResult.mirofishReview) {
+      res.write(`data: ${JSON.stringify({
+        type: 'mirofish_simulation',
+        review: sanitizedResult.mirofishReview,
+        timestamp: Date.now()
+      })}\n\n`);
+
+      // Registra o ensaio no grafo + link INFLUENCED (fire-and-forget)
+      void recordMirofishDecision(sanitizedResult.assetSymbol, sanitizedResult.mirofishReview, semanticaDecisionId)
+        .then((mirofishId) => {
+          if (mirofishId) console.log(`[semantica] mirofish gravado: ${mirofishId}`);
+        })
+        .catch(() => {});
+    }
 
     // 4. Emit FINAL CONSENSUS event
     res.write(`data: ${JSON.stringify({
@@ -703,6 +741,42 @@ app.get("/api/knowledge/stats", async (_req, res) => {
   const data = await getGraphStats();
   if (!data) return res.json({ success: false, disabled: true });
   res.json({ success: true, data });
+});
+
+// --- MiroFish (simulação de apoio ao comitê — replay determinístico) ---
+
+// Status da integração (worlds disponíveis, versão, símbolos)
+app.get("/api/mirofish/status", (_req, res) => {
+  res.json({ success: true, data: getMirofishStatus() });
+});
+
+// World de um símbolo (facts seed + coortes + cenários + stress) — fallback _default
+app.get("/api/mirofish/worlds", (req, res) => {
+  const symbol = (req.query.symbol as string) || "BTC";
+  const world = loadWorld(symbol);
+  if (!world) return res.json({ success: false, disabled: true });
+  res.json({ success: true, symbol, data: world });
+});
+
+// Catálogo de cenários disponíveis nos worlds
+app.get("/api/mirofish/scenarios", (_req, res) => {
+  res.json({ success: true, data: listScenarios() });
+});
+
+// Replay determinístico de um símbolo (?symbol=&seed=)
+app.get("/api/mirofish/replay", (req, res) => {
+  const symbol = (req.query.symbol as string) || "BTC";
+  const seedParam = req.query.seed as string | undefined;
+  const seed = seedParam ? parseInt(seedParam, 10) : undefined;
+  const price = parseFloat((req.query.price as string) || "");
+  const change24h = parseFloat((req.query.change24h as string) || "");
+  const simulation = runReplay(symbol, {
+    seed: Number.isFinite(seed) ? seed : undefined,
+    price: Number.isFinite(price) ? price : undefined,
+    change24h: Number.isFinite(change24h) ? change24h : undefined,
+  });
+  if (!simulation) return res.json({ success: false, disabled: true });
+  res.json({ success: true, symbol, data: simulation });
 });
 
 export default app;

@@ -1,4 +1,4 @@
-import { SwarmAnalysisResult } from '../types';
+import { SwarmAnalysisResult, MiroFishReview } from '../types';
 
 const SEMANTICA_BASE_URL = process.env.SEMANTICA_BASE_URL || '';
 const SEMANTICA_ENABLED = process.env.SEMANTICA_ENABLED !== 'false';
@@ -189,4 +189,68 @@ export async function getGraphStats(): Promise<GraphStats | null> {
   const stats = await semanticaRequest<GraphStats>('/stats');
   statsCache = { stats, cachedAt: Date.now() };
   return stats;
+}
+
+// Adiciona uma relação (edge) entre dois nós existentes no grafo.
+export async function addRelationship(
+  sourceId: string,
+  targetId: string,
+  relType: string,
+  metadata?: Record<string, unknown>
+): Promise<boolean> {
+  if (!isSemanticaEnabled()) return false;
+  const res = await semanticaRequest<{ status: string }>('/relationship', {
+    method: 'POST',
+    body: JSON.stringify({ source_id: sourceId, target_id: targetId, rel_type: relType, metadata }),
+  });
+  return !!res;
+}
+
+// Registra o ensaio MiroFish no grafo e liga a decisão do comitê via INFLUENCED.
+// O comitê permanece a origem da decisão (o nó do comitê já existe); a simulação
+// é o suporte com proveniência (best-effort, degradação graciosa).
+export async function recordMirofishDecision(
+  symbol: string,
+  review: MiroFishReview,
+  committeeDecisionId: string | null
+): Promise<string | null> {
+  if (!isSemanticaEnabled()) return null;
+
+  const decisionId = `mirofish-${symbol}-${review.simulation.seed}-${Date.now()}`;
+  const metadata = {
+    symbol,
+    verdict: review.verdict,
+    agreementScore: review.agreementScore,
+    simDirection: review.simulation.consensus.direction,
+    simIntensity: review.simulation.consensus.intensity,
+    committeeConfidence: review.committeeConfidence,
+    blendedConfidence: review.blendedConfidence,
+    seed: review.simulation.seed,
+    timestamp: review.simulation.timestamp,
+    ...(committeeDecisionId ? { committee_decision_id: committeeDecisionId } : {}),
+  };
+
+  const payload = {
+    decision_id: decisionId,
+    category: 'mirofish_world',
+    scenario: `Ensaio MiroFish em ${symbol} — consenso ${review.simulation.consensus.direction} (int ${review.simulation.consensus.intensity}/100, acordo ${review.agreementScore}%).`,
+    reasoning: review.reasons.join('\n'),
+    outcome: review.verdict,
+    confidence: Math.max(0, Math.min(1, review.agreementScore / 100)),
+    entities: [symbol, ...review.simulation.cohorts.map((c) => `cohort:${c.id}`)],
+    decision_maker: 'mirofish',
+    metadata,
+  };
+
+  const res = await semanticaRequest<{ decision_id: string }>('/decision', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+
+  // Link INFLUENCED: simulação → decisão do comitê (origem continua sendo o comitê).
+  if (committeeDecisionId) {
+    void addRelationship(decisionId, committeeDecisionId, 'INFLUENCED', metadata).catch(() => false);
+  }
+
+  return res?.decision_id ?? null;
 }

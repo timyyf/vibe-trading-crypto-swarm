@@ -9,6 +9,7 @@ import { runRiskProtocolOfficerEngine } from "./riskEngine.js";
 import { getCryptoKlines } from "./cryptoDataService.js";
 import { getWhaleOverview } from "./whaleDataService.js";
 import { computeWeightedVote } from "../lib/weightedVote.js";
+import { computeReview, runReplay, summarizeForPrompt } from "./mirofishService.js";
 
 export async function analyzeCryptoWithSwarm(
   symbol: string,
@@ -22,6 +23,20 @@ export async function analyzeCryptoWithSwarm(
   precedents?: string
 ): Promise<SwarmAnalysisResult> {
   const apiKey = process.env.GEMINI_API_KEY;
+
+  // Revisão MiroFish: a simulação é consultada como SUPORTE — o veredito final
+  // permanece sempre do comitê. A confiança exibida é ponderada (0.7 comitê + 0.3 sim).
+  const mirofishSimulation = runReplay(symbol, { price, change24h });
+  const mirofishPromptSection = summarizeForPrompt(symbol, { price, change24h });
+
+  const finalizeWithMirofish = (result: SwarmAnalysisResult): SwarmAnalysisResult => {
+    const review = computeReview(symbol, result.finalDecision, result.confidenceScore, { price, change24h }, mirofishSimulation);
+    if (review) {
+      result.mirofishReview = review;
+      result.confidenceScore = review.blendedConfidence;
+    }
+    return result;
+  };
 
   // Prompt describing the multi-agent committee process (Vibe-Trading Swarm archetype)
   const prompt = `Você é o ORQUESTRADOR CENTRAL do Comitê Vibe-Trading (HKU Data Science / Institutional Wall Street Framework).
@@ -38,6 +53,15 @@ ${precedents ? `
 
 MEMÓRIA DE LONGO PRAZO (PRECEDENTES HISTÓRICOS DE DECISÕES ANTERIORES):
 ${precedents}
+` : ''}
+${mirofishPromptSection ? `
+
+SUPORTE DE SIMULAÇÃO (MIROFISH — NÃO DECIDE; APENAS APOIO AO COMITÊ):
+${mirofishPromptSection}
+
+A simulação acima é apenas referencial. VOCÊ (orquestrador) é a única autoridade
+decisória: incorpore o consenso da simulação como mais um insumo, mas mantenha o
+veredito final fundamentado nos 6 pareceres reais do comitê.
 ` : ''}
 
 DIRETRIZES DOS ESPECIALIZADOS DO COMITÊ:
@@ -262,7 +286,7 @@ Retorne obrigatoriamente no formato JSON em português com a seguinte estrutura:
       const isNeutralDecision = !parsed.finalDecision || parsed.finalDecision.includes('NEUTRO') || parsed.finalDecision.includes('AGUARDAR');
       const effectiveDuration = isNeutralDecision ? 0 : (parsed.recommendedDurationMinutes || parsed.signalDurationMinutes || signalDurationMinutes);
 
-      return {
+      const geminiResult: SwarmAnalysisResult = {
         assetSymbol: symbol,
         assetName: name,
         assetPrice: price,
@@ -296,13 +320,15 @@ Retorne obrigatoriamente no formato JSON em português com a seguinte estrutura:
           };
         }),
       };
+      return finalizeWithMirofish(geminiResult);
     } catch (err: any) {
       console.log(`[Gemini API] Notice (${err?.message || 'Model Unavailable'}). Utilizing local high-speed quantitative model fallback.`);
     }
   }
 
   // Smart algorithmic fallback synthesis if GEMINI_API_KEY is not set or network fails
-  return await fallbackSwarmAnalysis(symbol, name, price, change24h, volume24h, high24h, low24h, signalDurationMinutes);
+  const fallbackResult = await fallbackSwarmAnalysis(symbol, name, price, change24h, volume24h, high24h, low24h, signalDurationMinutes);
+  return finalizeWithMirofish(fallbackResult);
 }
 
 function getAgentIcon(id: string): string {

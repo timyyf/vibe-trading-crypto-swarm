@@ -51,6 +51,99 @@ export interface AgentReport {
   status?: 'ONLINE' | 'ANALISANDO' | 'CONCLUÍDO' | 'DEGRADADO';
 }
 
+// --- MiroFish (simulação de apoio ao comitê — replay determinístico) ---
+
+export interface MiroFishWorldSeedFact {
+  id: string;
+  fact: string;
+  impact: 'bullish' | 'bearish' | 'neutral';
+  weight: number;
+  provenance: { source: string; url?: string; date?: string };
+}
+
+export interface MiroFishCohort {
+  id: string;
+  name: string;
+  count: number;
+  bias: number; // -1..1 agressividade da coorte (direção)
+  volatilityTolerance: number; // 0..1
+  icon: string;
+}
+
+export interface MiroFishScenario {
+  id: string;
+  name: string;
+  drift: number; // drift por barra
+  volatility: number; // volatilidade por barra
+  horizonBars: number;
+  bias: TradeDecision;
+}
+
+export interface MiroFishStressTest {
+  id: string;
+  name: string;
+  shockPercent: number;
+  recoveryBars: number;
+  liquidityGap: boolean;
+}
+
+export interface MiroFishWorld {
+  schemaVersion: number;
+  symbol: string;
+  name: string;
+  description: string;
+  seedFacts: MiroFishWorldSeedFact[];
+  cohorts: MiroFishCohort[];
+  scenarios: MiroFishScenario[];
+  stressTests: MiroFishStressTest[];
+}
+
+export interface MiroFishScenarioRun {
+  scenarioId: string;
+  scenarioName: string;
+  horizonBars: number;
+  finalReturnPercent: number;
+  maxDrawdownPercent: number;
+  trajectory: number[]; // preço normalizado (seed = 1)
+  direction: TradeDecision;
+  intensity: number; // 0-100
+  cohortSignals: { cohortId: string; name: string; count: number; signal: TradeDecision; score: number }[];
+}
+
+export interface MiroFishStressRun {
+  id: string;
+  name: string;
+  shockPercent: number;
+  survived: boolean;
+  postShockDirection: TradeDecision;
+}
+
+export interface MiroFishSimulationSummary {
+  symbol: string;
+  seed: number;
+  timestamp: number;
+  scenarioRuns: MiroFishScenarioRun[];
+  consensus: {
+    direction: TradeDecision;
+    intensity: number; // 0-100
+    agreement: number; // 0-100
+    scenariosCount: number;
+    alignedScenarios: number;
+  };
+  stress: MiroFishStressRun[];
+  cohorts: MiroFishCohort[];
+}
+
+export interface MiroFishReview {
+  verdict: 'APROVADA' | 'REJEITADA' | 'NEUTRO';
+  agreementScore: number; // 0-100
+  committeeConfidence: number; // confiança original do comitê (0-100)
+  blendedConfidence: number; // 0.7 comitê + 0.3 simulação
+  reasons: string[];
+  simulation: MiroFishSimulationSummary;
+  mirofishDecisionId?: string | null;
+}
+
 export interface SwarmAnalysisResult {
   assetSymbol: string;
   assetName: string;
@@ -58,6 +151,7 @@ export interface SwarmAnalysisResult {
   timestamp: number;
   engineSource?: 'gemini' | 'fallback';
   finalDecision: TradeDecision;
+  mirofishReview?: MiroFishReview;
   confidenceScore: number;
   signalDurationMinutes: number;
   recommendedDurationMinutes?: number; // 5, 10, 15, 20 min

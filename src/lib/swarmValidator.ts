@@ -263,12 +263,44 @@ export function validateAndSanitizeSwarmResponse(raw: any): ValidationResult {
     agents: sanitizedAgents,
   };
 
+  // Preserva a revisão MiroFish (gerada internamente pelo servidor) com validação defensiva.
+  const mirofishReview = sanitizeMirofishReview(raw.mirofishReview);
+  if (mirofishReview) {
+    sanitized.mirofishReview = mirofishReview;
+    if (typeof mirofishReview.blendedConfidence === 'number' && mirofishReview.blendedConfidence >= 0 && mirofishReview.blendedConfidence <= 100) {
+      sanitized.confidenceScore = mirofishReview.blendedConfidence;
+    }
+  }
+
   return {
     valid: errors.length === 0,
     errors,
     warnings,
     reports,
     sanitized,
+  };
+}
+
+// Defensive sanitization da revisão MiroFish (gerada por código interno; aqui apenas
+// garante que o contrato chegue íntegro ao frontend sem quebrar o schema).
+function sanitizeMirofishReview(raw: any): SwarmAnalysisResult['mirofishReview'] | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const verdict = ['APROVADA', 'REJEITADA', 'NEUTRO'].includes(raw.verdict) ? raw.verdict : 'NEUTRO';
+  const agreementScore = typeof raw.agreementScore === 'number' ? Math.min(100, Math.max(0, raw.agreementScore)) : 0;
+  const committeeConfidence = typeof raw.committeeConfidence === 'number' ? Math.min(100, Math.max(0, raw.committeeConfidence)) : 0;
+  const blendedConfidence = typeof raw.blendedConfidence === 'number' ? Math.min(100, Math.max(0, raw.blendedConfidence)) : 0;
+  const reasons = Array.isArray(raw.reasons) ? raw.reasons.filter((r: any) => typeof r === 'string') : [];
+  const simulation = raw.simulation && typeof raw.simulation === 'object' ? raw.simulation : undefined;
+
+  if (!simulation) return undefined;
+  return {
+    verdict,
+    agreementScore,
+    committeeConfidence,
+    blendedConfidence,
+    reasons,
+    simulation,
+    mirofishDecisionId: typeof raw.mirofishDecisionId === 'string' ? raw.mirofishDecisionId : null,
   };
 }
 

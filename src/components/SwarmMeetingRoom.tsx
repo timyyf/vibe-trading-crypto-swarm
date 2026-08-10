@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { CryptoAsset, SwarmAnalysisResult, TradeJournalEntry, TradeDecision, AgentReport } from '../types';
+import { CryptoAsset, SwarmAnalysisResult, TradeJournalEntry, TradeDecision, AgentReport, MiroFishReview, MiroFishSimulationSummary } from '../types';
 import { AgentStatusControlPanel } from './AgentStatusControlPanel';
 import { SwarmDebugModal } from './SwarmDebugModal';
 import {
@@ -25,6 +25,10 @@ import {
   Sliders,
   Bug,
   Info,
+  FlaskConical,
+  Dices,
+  Gauge,
+  Ban,
 } from 'lucide-react';
 
 interface SwarmMeetingRoomProps {
@@ -113,9 +117,28 @@ export const SwarmMeetingRoom: React.FC<SwarmMeetingRoomProps> = ({
   const [loadingProgress, setLoadingProgress] = useState<number>(0);
   const [currentStepText, setCurrentStepText] = useState<string>('Iniciando comitê de IA...');
   const [extensionNotice, setExtensionNotice] = useState<string | null>(null);
-  const [roomViewMode, setRoomViewMode] = useState<'CONTROL_PANEL' | 'CONSENSUS_ROOM'>('CONTROL_PANEL');
+  const [roomViewMode, setRoomViewMode] = useState<'CONTROL_PANEL' | 'CONSENSUS_ROOM' | 'SIMULATION_ROOM'>('CONTROL_PANEL');
   const [isDebugModalOpen, setIsDebugModalOpen] = useState<boolean>(false);
   const [showExplanation, setShowExplanation] = useState<boolean>(false);
+
+  // MiroFish — Simulação de apoio (replay determinístico)
+  const [mirofishStatus, setMirofishStatus] = useState<{ enabled: boolean; worldCount?: number; symbols?: string[] } | null>(null);
+  const [replayResult, setReplayResult] = useState<MiroFishSimulationSummary | null>(null);
+  const [replayLoading, setReplayLoading] = useState<boolean>(false);
+  const [replaySeed, setReplaySeed] = useState<string>('');
+  const [replayChange24h, setReplayChange24h] = useState<string>('');
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch('/api/mirofish/status');
+        const json = await res.json();
+        if (json.success) setMirofishStatus(json.data);
+      } catch {
+        // integração indisponível — painel exibe estado desabilitado
+      }
+    })();
+  }, []);
 
   // Real-time Partial Streaming States
   const [streamingAgents, setStreamingAgents] = useState<AgentReport[]>([]);
@@ -258,6 +281,9 @@ export const SwarmMeetingRoom: React.FC<SwarmMeetingRoomProps> = ({
                 setActiveAgentIndex(event.agentIndex + 1);
                 setCurrentStepText(`Especialista ${event.agentIndex + 1}/${event.totalAgents}: ${partialAgent.agentName} concluiu parecer parcial!`);
                 setLoadingProgress(Math.min(95, Math.round(((event.agentIndex + 1) / event.totalAgents) * 80 + 15)));
+              } else if (event.type === 'mirofish_simulation') {
+                setCurrentStepText(`MiroFish executou replay determinístico (apoio ao comitê) — revisão ${event.review?.verdict ?? 'registrada'}.`);
+                setLoadingProgress(98);
               } else if (event.type === 'final_consensus') {
                 setLoadingProgress(100);
                 setCurrentStepText(`Consenso final do comitê sintetizado com sucesso!`);
@@ -281,7 +307,7 @@ export const SwarmMeetingRoom: React.FC<SwarmMeetingRoomProps> = ({
 
   // User explicitly clicks "Entrei no Trade Agora"
   const handleUserEnteredNow = () => {
-    if (isNeutral) return;
+    if (isNeutral || isMirofishRejected) return;
     setTradeEntryTimestamp(Date.now());
     setExtensionNotice('Entrada confirmada! A contagem regressiva agora calcula o tempo seguro exato a partir deste instante.');
     setTimeout(() => setExtensionNotice(null), 6000);
@@ -289,7 +315,7 @@ export const SwarmMeetingRoom: React.FC<SwarmMeetingRoomProps> = ({
 
   // Auto-extend safe duration window (+5 min)
   const handleAutonomousExtend = () => {
-    if (isNeutral) return;
+    if (isNeutral || isMirofishRejected) return;
     setExtendedSeconds((prev) => prev + 300);
     setExtensionNotice('Janela de tempo estendida autonomamente (+5 min) com base na sustentação do momentum do ativo!');
     setTimeout(() => setExtensionNotice(null), 6000);
@@ -314,7 +340,7 @@ export const SwarmMeetingRoom: React.FC<SwarmMeetingRoomProps> = ({
   }
 
   const handleAddJournalClick = () => {
-    if (!swarmResult) return;
+    if (!swarmResult || isMirofishRejected) return;
     onAddToJournal({
       symbol: swarmResult.assetSymbol,
       type: swarmResult.finalDecision === 'COMPRAR' ? 'COMPRA' : 'VENDA',
@@ -329,6 +355,29 @@ export const SwarmMeetingRoom: React.FC<SwarmMeetingRoomProps> = ({
     });
     setAddedToJournal(true);
   };
+
+  // MiroFish — Replay determinístico independente (painel de simulação)
+  const handleRunReplay = async () => {
+    setReplayLoading(true);
+    setReplayResult(null);
+    try {
+      const params = new URLSearchParams({ symbol: selectedAsset.symbol });
+      if (replaySeed.trim()) params.set('seed', replaySeed.trim());
+      params.set('price', String(selectedAsset.price));
+      params.set('change24h', replayChange24h.trim() || '0');
+      const res = await fetch(`/api/mirofish/replay?${params.toString()}`);
+      const json = await res.json();
+      if (json.success && json.data) setReplayResult(json.data);
+    } catch (err) {
+      console.error('Erro ao executar replay MiroFish:', err);
+    } finally {
+      setReplayLoading(false);
+    }
+  };
+
+  // Veto visual MiroFish: a simulação é contrária à decisão do comitê (decisão permanece)
+  const mirofishReview = swarmResult?.mirofishReview ?? null;
+  const isMirofishRejected = mirofishReview?.verdict === 'REJEITADA';
 
   const renderAgentIcon = (iconName: string) => {
     switch (iconName) {
@@ -461,6 +510,19 @@ export const SwarmMeetingRoom: React.FC<SwarmMeetingRoomProps> = ({
           >
             <Users className="w-3.5 h-3.5 text-cyan-400" />
             <span>Consenso do Comitê</span>
+          </button>
+
+          <button
+            onClick={() => setRoomViewMode('SIMULATION_ROOM')}
+            className={`flex items-center gap-2 px-3 py-1.5 rounded transition-all font-bold uppercase text-[11px] ${
+              roomViewMode === 'SIMULATION_ROOM'
+                ? 'bg-violet-500/20 text-violet-300 border border-violet-500/40 shadow-sm'
+                : 'text-[#9CA3AF] hover:text-white hover:bg-[#1C1F24]'
+            }`}
+            title="Replay determinístico MiroFish — simulação de apoio que nunca decide pelo comitê"
+          >
+            <FlaskConical className="w-3.5 h-3.5 text-violet-400" />
+            <span>Simulação MiroFish</span>
           </button>
         </div>
 
@@ -777,18 +839,26 @@ export const SwarmMeetingRoom: React.FC<SwarmMeetingRoomProps> = ({
                 <div className="grid grid-cols-2 gap-1.5 pt-1">
                   <button
                     onClick={handleUserEnteredNow}
-                    disabled={isNeutral || validityStatus === 'NAO_ENTRAR'}
+                    disabled={isNeutral || validityStatus === 'NAO_ENTRAR' || isMirofishRejected}
                     className={`px-2 py-1.5 rounded text-[10px] font-mono font-bold uppercase transition-all flex items-center justify-center gap-1 border ${
                       isNeutral || validityStatus === 'NAO_ENTRAR'
                         ? 'bg-[#0A0B0D] text-[#6B7280] border-[#24272C] cursor-not-allowed'
+                        : isMirofishRejected
+                        ? 'bg-rose-950/50 text-rose-400 border-rose-500/50 cursor-not-allowed'
                         : tradeEntryTimestamp
                         ? 'bg-emerald-950/80 text-emerald-400 border-emerald-500/50'
                         : 'bg-[#0A0B0D] hover:bg-[#24272C] text-emerald-400 border-[#24272C]'
                     }`}
-                    title={isNeutral ? 'Operação não recomendada por comitê neutro' : 'Calibra a contagem regressiva a partir da sua entrada'}
+                    title={
+                      isNeutral
+                        ? 'Operação não recomendada por comitê neutro'
+                        : isMirofishRejected
+                        ? 'Veto visual MiroFish: a simulação é contrária à decisão do comitê (decisão do comitê permanece)'
+                        : 'Calibra a contagem regressiva a partir da sua entrada'
+                    }
                   >
-                    <Zap className="w-3 h-3 text-emerald-400 fill-emerald-400/20" />
-                    <span>{isNeutral ? '🚫 Sem Operação' : tradeEntryTimestamp ? '✓ Entrei no Trade' : 'Entrei no Trade Agora'}</span>
+                    <Zap className={`w-3 h-3 fill-emerald-400/20 ${isMirofishRejected ? 'text-rose-400' : 'text-emerald-400'}`} />
+                    <span>{isNeutral ? '🚫 Sem Operação' : isMirofishRejected ? '🚫 Bloqueado (MiroFish)' : tradeEntryTimestamp ? '✓ Entrei no Trade' : 'Entrei no Trade Agora'}</span>
                   </button>
 
                   <div
@@ -804,6 +874,16 @@ export const SwarmMeetingRoom: React.FC<SwarmMeetingRoomProps> = ({
                 {extensionNotice && (
                   <div className="bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 px-2 py-1 rounded text-[10px] font-mono leading-tight animate-fadeIn">
                     {extensionNotice}
+                  </div>
+                )}
+
+                {/* MiroFish Visual Veto Notice */}
+                {isMirofishRejected && (
+                  <div className="bg-rose-500/10 border border-rose-500/40 text-rose-300 px-2 py-1.5 rounded text-[10px] font-mono leading-tight animate-fadeIn flex items-start gap-1.5">
+                    <Ban className="w-3.5 h-3.5 text-rose-400 shrink-0 mt-0.5" />
+                    <span>
+                      <span className="font-bold uppercase">Veto visual MiroFish:</span> a simulação é contrária à decisão do comitê ({swarmResult?.finalDecision}). Execução bloqueada — a decisão do comitê permanece inalterada.
+                    </span>
                   </div>
                 )}
 
@@ -865,19 +945,22 @@ export const SwarmMeetingRoom: React.FC<SwarmMeetingRoomProps> = ({
                 {/* Journal Add Action */}
                 <button
                   onClick={handleAddJournalClick}
-                  disabled={addedToJournal || isNeutral || validityStatus === 'NAO_ENTRAR'}
+                  disabled={addedToJournal || isNeutral || validityStatus === 'NAO_ENTRAR' || isMirofishRejected}
                   className={`w-full py-2 px-3 rounded font-mono font-bold text-xs uppercase tracking-wider flex items-center justify-center gap-1.5 transition-all ${
                     addedToJournal
                       ? 'bg-emerald-950 text-emerald-400 border border-emerald-800 cursor-default'
-                      : isNeutral || validityStatus === 'NAO_ENTRAR'
+                      : isNeutral || validityStatus === 'NAO_ENTRAR' || isMirofishRejected
                       ? 'bg-[#1C1F24] text-[#6B7280] border border-[#24272C] cursor-not-allowed'
                       : 'bg-emerald-600 hover:bg-emerald-500 text-white border border-emerald-400/30 active:scale-95'
                   }`}
+                  title={isMirofishRejected ? 'Veto visual MiroFish: simulação contrária à decisão do comitê — registro de execução bloqueado' : 'Registra a operação no diário de trades'}
                 >
                   <BookMarked className="w-3.5 h-3.5" />
                   <span>
                     {isNeutral
                       ? 'Neutro registrado como Observação'
+                      : isMirofishRejected
+                      ? '🚫 Registro Bloqueado (Veto MiroFish)'
                       : addedToJournal
                       ? '✓ Operação no Diário'
                       : 'Registrar Operação no Diário'}
@@ -896,6 +979,104 @@ export const SwarmMeetingRoom: React.FC<SwarmMeetingRoomProps> = ({
               </div>
             </div>
           </div>
+
+          {/* MIROFISH REVIEW CARD — SIMULAÇÃO DE APOIO AO COMITÊ */}
+          {mirofishReview && (
+            <div
+              className={`border rounded-lg p-4 space-y-3 animate-fadeIn ${
+                mirofishReview.verdict === 'APROVADA'
+                  ? 'bg-emerald-950/20 border-emerald-500/40'
+                  : mirofishReview.verdict === 'REJEITADA'
+                  ? 'bg-rose-950/20 border-rose-500/40'
+                  : 'bg-[#121417] border-[#24272C]'
+              }`}
+            >
+              {/* Header */}
+              <div className="flex flex-wrap items-center gap-2 justify-between">
+                <div className="flex items-center gap-2">
+                  <FlaskConical
+                    className={`w-4 h-4 ${
+                      mirofishReview.verdict === 'APROVADA'
+                        ? 'text-emerald-400'
+                        : mirofishReview.verdict === 'REJEITADA'
+                        ? 'text-rose-400'
+                        : 'text-amber-400'
+                    }`}
+                  />
+                  <h3 className="text-xs font-mono font-bold text-white uppercase tracking-wider">
+                    Revisão MiroFish — Simulação de Apoio
+                  </h3>
+                  <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-[#1C1F24] text-[#9CA3AF] border border-[#24272C]">
+                    NUNCA DECIDE — APOIO AO COMITÊ
+                  </span>
+                </div>
+                <span
+                  className={`inline-flex items-center gap-1.5 px-3 py-1 rounded font-mono font-black text-xs uppercase border ${
+                    mirofishReview.verdict === 'APROVADA'
+                      ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/40'
+                      : mirofishReview.verdict === 'REJEITADA'
+                      ? 'bg-rose-500/10 text-rose-400 border-rose-500/40'
+                      : 'bg-amber-500/10 text-amber-400 border-amber-500/40'
+                  }`}
+                >
+                  {mirofishReview.verdict === 'APROVADA' ? (
+                    <CheckCircle2 className="w-3.5 h-3.5" />
+                  ) : mirofishReview.verdict === 'REJEITADA' ? (
+                    <XCircle className="w-3.5 h-3.5" />
+                  ) : (
+                    <AlertTriangle className="w-3.5 h-3.5" />
+                  )}
+                  {mirofishReview.verdict}
+                </span>
+              </div>
+
+              {/* Confidence Blend 0.7 comitê + 0.3 simulação */}
+              <div className="grid grid-cols-3 gap-1.5 text-center text-xs">
+                <div className="bg-[#0A0B0D] p-2 rounded border border-[#24272C]">
+                  <div className="text-[9px] font-mono text-[#6B7280] uppercase">Comitê (0.7)</div>
+                  <div className="font-mono font-bold text-white mt-0.5">{mirofishReview.committeeConfidence}%</div>
+                </div>
+                <div className="bg-[#0A0B0D] p-2 rounded border border-[#24272C]">
+                  <div className="text-[9px] font-mono text-[#6B7280] uppercase">Acordo da Simulação</div>
+                  <div className="font-mono font-bold text-white mt-0.5">{mirofishReview.agreementScore}%</div>
+                </div>
+                <div className={`p-2 rounded border ${
+                  mirofishReview.blendedConfidence >= mirofishReview.committeeConfidence
+                    ? 'bg-emerald-950/40 border-emerald-500/40'
+                    : 'bg-amber-950/40 border-amber-500/40'
+                }`}>
+                  <div className="text-[9px] font-mono text-[#9CA3AF] uppercase">Confiança Exibida</div>
+                  <div className="font-mono font-black text-white mt-0.5">{mirofishReview.blendedConfidence}%</div>
+                </div>
+              </div>
+
+              {/* Simulação resumo */}
+              <div className="flex flex-wrap gap-1.5 text-[10px] font-mono">
+                <span className="px-2 py-0.5 rounded bg-[#1C1F24] text-[#9CA3AF] border border-[#24272C]">
+                  Consenso simulado: <span className="font-bold text-white">{mirofishReview.simulation?.consensus?.direction}</span>
+                </span>
+                <span className="px-2 py-0.5 rounded bg-[#1C1F24] text-[#9CA3AF] border border-[#24272C]">
+                  Intensidade: <span className="font-bold text-white">{mirofishReview.simulation?.consensus?.intensity}/100</span>
+                </span>
+                <span className="px-2 py-0.5 rounded bg-[#1C1F24] text-[#9CA3AF] border border-[#24272C]">
+                  Cenários: <span className="font-bold text-white">{mirofishReview.simulation?.consensus?.scenariosCount}</span> ({mirofishReview.simulation?.consensus?.alignedScenarios} alinhados)
+                </span>
+                <span className="px-2 py-0.5 rounded bg-[#1C1F24] text-[#9CA3AF] border border-[#24272C]">
+                  Stress: <span className="font-bold text-white">{mirofishReview.simulation?.stress?.filter((s) => s.survived).length}/{mirofishReview.simulation?.stress?.length}</span> sobreviveram
+                </span>
+              </div>
+
+              {/* Reasons */}
+              <ul className="space-y-1">
+                {mirofishReview.reasons.map((reason, idx) => (
+                  <li key={idx} className="text-[11px] text-[#9CA3AF] flex items-start gap-2 leading-relaxed">
+                    <ArrowRight className="w-3 h-3 text-violet-400 flex-shrink-0 mt-0.5" />
+                    <span>{reason}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
 
           {/* DECISION EXPLANATION PANEL */}
           {showExplanation && (
@@ -1005,6 +1186,243 @@ export const SwarmMeetingRoom: React.FC<SwarmMeetingRoomProps> = ({
               ))}
             </div>
           </div>
+        </div>
+      )}
+
+      {/* SIMULATION ROOM — Replay Determinístico MiroFish */}
+      {roomViewMode === 'SIMULATION_ROOM' && (
+        <div className="space-y-4">
+          {/* Status + Controls */}
+          <div className="bg-[#121417] border border-[#24272C] rounded-lg p-4 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <FlaskConical className="w-4 h-4 text-violet-400" />
+                <h3 className="text-xs font-mono font-bold text-white uppercase tracking-wider">
+                  Simulação MiroFish — Replay Determinístico
+                </h3>
+              </div>
+              {mirofishStatus ? (
+                mirofishStatus.enabled ? (
+                  <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-300 border border-emerald-500/30">
+                    {mirofishStatus.worldCount} worlds carregados
+                  </span>
+                ) : (
+                  <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-amber-500/10 text-amber-300 border border-amber-500/30">
+                    Worlds indisponíveis
+                  </span>
+                )
+              ) : (
+                <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-[#1C1F24] text-[#6B7280] border border-[#24272C]">
+                  Verificando status...
+                </span>
+              )}
+            </div>
+
+            <p className="text-[11px] text-[#9CA3AF] font-mono leading-relaxed">
+              Replay <span className="text-white font-bold">determinístico</span> com base no world de{' '}
+              <span className="text-violet-300 font-bold">{selectedAsset.symbol}</span> (seed padrão = hash do símbolo). A mesma
+              seed reproduz exatamente o mesmo resultado. A simulação é <span className="text-amber-300 font-bold">apoio ao comitê de 6 agentes</span> — nunca decide e nunca sobrescreve a decisão do comitê.
+            </p>
+
+            {/* Controls */}
+            <div className="flex flex-col sm:flex-row gap-2">
+              <label className="flex items-center gap-2 bg-[#0A0B0D] px-3 py-2 rounded border border-[#24272C] flex-1">
+                <Dices className="w-3.5 h-3.5 text-violet-400 shrink-0" />
+                <span className="text-[10px] font-mono uppercase text-[#9CA3AF]">Seed:</span>
+                <input
+                  type="text"
+                  value={replaySeed}
+                  onChange={(e) => setReplaySeed(e.target.value)}
+                  placeholder="auto (hash do símbolo)"
+                  className="bg-transparent text-white font-mono text-xs focus:outline-none w-full placeholder:text-[#6B7280]"
+                />
+              </label>
+              <label className="flex items-center gap-2 bg-[#0A0B0D] px-3 py-2 rounded border border-[#24272C]">
+                <Gauge className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+                <span className="text-[10px] font-mono uppercase text-[#9CA3AF]">Change 24h:</span>
+                <input
+                  type="number"
+                  step="0.1"
+                  value={replayChange24h}
+                  onChange={(e) => setReplayChange24h(e.target.value)}
+                  placeholder={selectedAsset.change24h.toFixed(2)}
+                  className="bg-transparent text-white font-mono text-xs focus:outline-none w-16 text-right placeholder:text-[#6B7280]"
+                />
+              </label>
+              <button
+                onClick={handleRunReplay}
+                disabled={replayLoading}
+                className={`flex items-center justify-center gap-2 px-4 py-2 rounded font-mono font-bold text-xs uppercase tracking-wider border transition-all ${
+                  replayLoading
+                    ? 'bg-[#1C1F24] text-[#6B7280] border border-[#24272C] cursor-not-allowed'
+                    : 'bg-violet-600 hover:bg-violet-500 text-white border border-violet-400/40 active:scale-95'
+                }`}
+              >
+                {replayLoading ? (
+                  <>
+                    <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                    <span>Replay em Andamento...</span>
+                  </>
+                ) : (
+                  <>
+                    <RotateCcw className="w-3.5 h-3.5" />
+                    <span>Executar Replay</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+
+          {/* Replay Results */}
+          {replayResult ? (
+            <div className="space-y-3">
+              {/* Consensus Banner */}
+              <div className="bg-[#121417] border border-[#24272C] rounded-lg p-4">
+                <div className="flex flex-wrap items-center gap-2 justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] font-mono uppercase tracking-widest text-[#9CA3AF]">
+                      Consenso da Simulação
+                    </span>
+                    <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-violet-500/20 text-violet-300 border border-violet-500/40 font-bold">
+                      seed {replayResult.seed}
+                    </span>
+                  </div>
+                  <div
+                    className={`px-3 py-1 rounded font-mono font-black text-sm uppercase border ${
+                      replayResult.consensus.direction === 'COMPRAR'
+                        ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
+                        : replayResult.consensus.direction === 'VENDER'
+                        ? 'bg-rose-500/10 text-rose-400 border-rose-500/30'
+                        : 'bg-amber-500/10 text-amber-400 border-amber-500/30'
+                    }`}
+                  >
+                    {replayResult.consensus.direction}
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-3 gap-1.5 text-center text-xs mt-3">
+                  <div className="bg-[#0A0B0D] p-2 rounded border border-[#24272C]">
+                    <div className="text-[9px] font-mono text-[#6B7280] uppercase">Intensidade</div>
+                    <div className="font-mono font-bold text-white mt-0.5">{replayResult.consensus.intensity}/100</div>
+                  </div>
+                  <div className="bg-[#0A0B0D] p-2 rounded border border-[#24272C]">
+                    <div className="text-[9px] font-mono text-[#6B7280] uppercase">Acordo</div>
+                    <div className="font-mono font-bold text-white mt-0.5">{replayResult.consensus.agreement}%</div>
+                  </div>
+                  <div className="bg-[#0A0B0D] p-2 rounded border border-[#24272C]">
+                    <div className="text-[9px] font-mono text-[#6B7280] uppercase">Cenários Alinhados</div>
+                    <div className="font-mono font-bold text-white mt-0.5">
+                      {replayResult.consensus.alignedScenarios}/{replayResult.consensus.scenariosCount}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Scenario Runs */}
+              <div className="bg-[#121417] border border-[#24272C] rounded-lg p-4 space-y-2">
+                <h4 className="text-[10px] font-mono uppercase text-[#6B7280]">Cenários executados</h4>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                  {replayResult.scenarioRuns.map((run) => (
+                    <div key={run.scenarioId} className="bg-[#1A1D21] border border-[#24272C] rounded p-2.5 space-y-1.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-[11px] font-bold text-white font-mono">{run.scenarioName}</span>
+                        <span
+                          className={`text-[9px] font-mono font-bold px-1.5 py-0.5 rounded border uppercase ${
+                            run.direction === 'COMPRAR'
+                              ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
+                              : run.direction === 'VENDER'
+                              ? 'bg-rose-500/10 text-rose-400 border-rose-500/30'
+                              : 'bg-amber-500/10 text-amber-400 border-amber-500/30'
+                          }`}
+                        >
+                          {run.direction}
+                        </span>
+                      </div>
+                      <div className="flex gap-1.5 text-[10px] font-mono">
+                        <span className="px-1.5 py-0.5 rounded bg-[#0A0B0D] text-[#9CA3AF] border border-[#24272C]">
+                          Int {run.intensity}/100
+                        </span>
+                        <span className={`px-1.5 py-0.5 rounded bg-[#0A0B0D] border border-[#24272C] ${run.finalReturnPercent >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                          Ret {run.finalReturnPercent >= 0 ? '+' : ''}{run.finalReturnPercent.toFixed(1)}%
+                        </span>
+                        <span className="px-1.5 py-0.5 rounded bg-[#0A0B0D] text-rose-400 border border-[#24272C]">
+                          DD {run.maxDrawdownPercent.toFixed(1)}%
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Stress Tests */}
+              <div className="bg-[#121417] border border-[#24272C] rounded-lg p-4 space-y-2">
+                <h4 className="text-[10px] font-mono uppercase text-[#6B7280]">Testes de estresse</h4>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+                  {replayResult.stress.map((s) => (
+                    <div key={s.id} className={`rounded p-2.5 border ${s.survived ? 'bg-emerald-950/20 border-emerald-500/30' : 'bg-rose-950/20 border-rose-500/40'}`}>
+                      <div className="flex items-center justify-between gap-1">
+                        <span className="text-[11px] font-mono font-bold text-white">{s.name}</span>
+                        {s.survived ? (
+                          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                        ) : (
+                          <XCircle className="w-3.5 h-3.5 text-rose-400 shrink-0" />
+                        )}
+                      </div>
+                      <p className={`text-[10px] font-mono mt-1 ${s.survived ? 'text-emerald-300' : 'text-rose-300'}`}>
+                        {s.survived ? `Sobreviveu a -${s.shockPercent}%` : `Quebrou (${s.postShockDirection})`}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Cohorts */}
+              <div className="bg-[#121417] border border-[#24272C] rounded-lg p-4 space-y-2">
+                <h4 className="text-[10px] font-mono uppercase text-[#6B7280]">Coortes simuladas</h4>
+                <div className="grid grid-cols-2 md:grid-cols-3 gap-1.5">
+                  {replayResult.cohorts.map((c) => (
+                    <div key={c.id} className="bg-[#1A1D21] border border-[#24272C] rounded p-2">
+                      <div className="flex items-center justify-between gap-1">
+                        <span className="text-[11px] font-mono font-bold text-white truncate">{c.name}</span>
+                        <span className="text-[9px] font-mono text-[#6B7280] shrink-0">{c.count}</span>
+                      </div>
+                      <div className="flex items-center gap-1.5 mt-1">
+                        <span className={`text-[9px] font-mono px-1.5 py-0.5 rounded border ${c.bias >= 0.15 ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30' : c.bias <= -0.15 ? 'bg-rose-500/10 text-rose-300 border-rose-500/30' : 'bg-amber-500/10 text-amber-300 border-amber-500/30'}`}>
+                          bias {c.bias >= 0 ? '+' : ''}{c.bias}
+                        </span>
+                        <span className="text-[9px] font-mono text-[#6B7280]">tol {c.volatilityTolerance}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="bg-[#121417] border border-dashed border-[#24272C] rounded-lg p-8 text-center space-y-3">
+              <div className="w-12 h-12 rounded bg-[#1A1D21] border border-[#24272C] flex items-center justify-center mx-auto text-violet-400">
+                <FlaskConical className="w-6 h-6" />
+              </div>
+              <div className="max-w-md mx-auto space-y-1">
+                <h3 className="text-sm font-mono font-bold text-white uppercase">Replay MiroFish Standby</h3>
+                <p className="text-xs text-[#9CA3AF]">
+                  Execute um replay determinístico de {selectedAsset.symbol} para ver o apoio que o comitê de 6 agentes recebe.
+                  {mirofishStatus?.enabled && mirofishStatus.symbols && mirofishStatus.symbols.length > 0 && (
+                    <span className="block mt-2 font-mono text-[10px] text-[#6B7280]">
+                      Worlds: {mirofishStatus.symbols.join(', ')}
+                    </span>
+                  )}
+                </p>
+              </div>
+              <button
+                onClick={handleRunReplay}
+                disabled={replayLoading}
+                className="inline-flex items-center gap-2 px-4 py-2 rounded bg-violet-600 hover:bg-violet-500 text-white font-mono font-bold text-xs uppercase tracking-wider"
+              >
+                <Play className="w-3.5 h-3.5 fill-white" />
+                <span>Executar Replay de {selectedAsset.symbol}</span>
+              </button>
+            </div>
+          )}
         </div>
       )}
 

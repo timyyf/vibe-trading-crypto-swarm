@@ -14,6 +14,15 @@ O **Vibe Trading Swarm AI** é um sistema avançado de tomada de decisão para c
 
 ## 🆕 Novidades & Atualizações Recentes
 
+### 🐠 Simulação MiroFish — Replay Determinístico de Apoio ao Comitê
+- **Worlds por ativo** (`mirofish/worlds/*.json`): 9 símbolos (BTC, ETH, SOL, SUI, NEAR, PEPE, XRP, BNB, DOGE) + `_default.json` de fallback, com fatos seed de proveniência, 6 coortes, 7 cenários e 3 testes de estresse.
+- **Replay determinístico**: a mesma seed reproduz exatamente o mesmo resultado (seed padrão = hash do símbolo). Endpoints `GET /api/mirofish/status`, `/worlds`, `/scenarios` e `/replay`.
+- **Nunca decide, nunca sobrescreve**: a decisão final (COMPRAR/VENDER/AGUARDAR) é sempre do comitê de 6 agentes. A simulação apenas (a) pesa a **confiança exibida** em `0.7 comitê + 0.3 simulação`, (b) emite o veredito **APROVADA / REJEITADA / NEUTRO** e (c) aplica **veto visual**: decisão REJEITADA bloqueia os botões de execução ("Entrei no Trade" e registro no diário) mantendo a decisão do comitê intacta.
+- Integração no fluxo SSE (`/api/swarm/stream`): novo evento `mirofish_simulation` antes do `final_consensus`; o review também chega dentro do `data` do consenso.
+- Auditoria no grafo Semantica: o ensaio é registrado (`category: mirofish_world`) e ligado à decisão do comitê via **INFLUENCED** (o comitê permanece a origem).
+- Nova aba no Consenso do Comitê: **Simulação MiroFish** (3º modo) para executar replays com seed escolhida e inspecionar cenários, coortes e estresse.
+- **Export PROV-O**: botão **Export PROV-O (.ttl)** na aba Knowledge serializa decisões do comitê, ensaios MiroFish e diário em **W3C PROV-O (Turtle)** com a cadeia causal (`prov:wasInfluencedBy`).
+
 ### 🧠 Memória de Longo Prazo — Semantica Knowledge Graph
 - O comitê agora **grava cada decisão automaticamente** em um grafo de conhecimento (`Semantica`, sidecar no Render free) e consulta **precedentes históricos**, **provenance** (cadeia causal) e estatísticas na nova aba **Knowledge**.
 - Degradação graciosa: sem o sidecar, o app continua 100% funcional.
@@ -30,7 +39,7 @@ O **Vibe Trading Swarm AI** é um sistema avançado de tomada de decisão para c
 - Dashboard com **contagem de requisições, latência p50/p95 e breakdown por rota** em uma janela de 15 minutos.
 
 ### 🧪 Suíte de Testes Automatizados (Vitest)
-- **48 testes unitários** cobrindo os motores quantitativos (técnico, risco, baleias, orderbook, sentimento, alpha), validação do swarm e novos utilitários (sparkline, observabilidade, voto ponderado).
+- **75 testes unitários** cobrindo os motores quantitativos (técnico, risco, baleias, orderbook, sentimento, alpha), validação do swarm, utilitários (sparkline, observabilidade, voto ponderado, export PROV-O) e o serviço MiroFish (determinismo do replay, worlds, blend de confiança e veredito).
 
 ### 🛡️ Validação de API & Rate Limit
 - **zod**: payloads inválidos do comitê retornam `400` com a lista de erros detalhada.

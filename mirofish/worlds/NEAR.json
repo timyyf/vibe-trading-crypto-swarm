@@ -1,0 +1,172 @@
+{
+  "schemaVersion": 1,
+  "symbol": "NEAR",
+  "name": "NEAR Protocol",
+  "description": "L1 sharded focada em usabilidade (Chain Signatures, NEAR AI) — narrativa de web3 orientada ao usuário e IA.",
+  "seedFacts": [
+    {
+      "id": "near-ai-hub",
+      "fact": "NEAR AI Hub e agentes on-chain posicionam a rede na narrativa de IA + cripto em 2024/2025.",
+      "impact": "bullish",
+      "weight": 0.8,
+      "provenance": {
+        "source": "NEAR Foundation",
+        "url": "https://near.org",
+        "date": "2024"
+      }
+    },
+    {
+      "id": "near-chain-abstraction",
+      "fact": "Chain Signatures permitem contas NEAR controlarem carteiras em outras redes — caso de uso real de abstração de cadeia.",
+      "impact": "bullish",
+      "weight": 0.6,
+      "provenance": {
+        "source": "NEAR Docs",
+        "url": "https://docs.near.org",
+        "date": "2024"
+      }
+    },
+    {
+      "id": "near-low-liquidity",
+      "fact": "Liquidez relativamente menor vs. L1s top-5 torna o ativo mais suscetível a movimentos de fluxo.",
+      "impact": "bearish",
+      "weight": 0.5,
+      "provenance": {
+        "source": "CoinGecko / CoinMarketCap",
+        "url": "https://coingecko.com",
+        "date": "2024"
+      }
+    }
+  ],
+  "cohorts": [
+    {
+      "id": "momentum",
+      "name": "Seguidores de Momentum",
+      "count": 400,
+      "bias": 0.6,
+      "volatilityTolerance": 0.4,
+      "icon": "TrendingUp"
+    },
+    {
+      "id": "mean_reversion",
+      "name": "Reversores de Média",
+      "count": 300,
+      "bias": -0.2,
+      "volatilityTolerance": 0.6,
+      "icon": "GitCompareArrows"
+    },
+    {
+      "id": "sentiment_drift",
+      "name": "Drift de Sentimento",
+      "count": 250,
+      "bias": 0.3,
+      "volatilityTolerance": 0.5,
+      "icon": "MessageSquare"
+    },
+    {
+      "id": "whale_follower",
+      "name": "Seguidores de Baleias",
+      "count": 200,
+      "bias": 0.4,
+      "volatilityTolerance": 0.3,
+      "icon": "ShieldAlert"
+    },
+    {
+      "id": "liquidators",
+      "name": "Liquidadores (Stop Hunt)",
+      "count": 150,
+      "bias": -0.4,
+      "volatilityTolerance": 0.8,
+      "icon": "Zap"
+    },
+    {
+      "id": "risk_averse",
+      "name": "Aversos a Risco",
+      "count": 100,
+      "bias": 0.1,
+      "volatilityTolerance": 0.2,
+      "icon": "Shield"
+    }
+  ],
+  "scenarios": [
+    {
+      "id": "momentum_continuation",
+      "name": "Continuação de Momentum",
+      "drift": 0.00144,
+      "volatility": 0.0064,
+      "horizonBars": 60,
+      "bias": "COMPRAR"
+    },
+    {
+      "id": "breakout_liquidity_sweep",
+      "name": "Breakout com Sweep de Liquidez",
+      "drift": 0.00216,
+      "volatility": 0.0096,
+      "horizonBars": 30,
+      "bias": "COMPRAR"
+    },
+    {
+      "id": "fomo_rally",
+      "name": "Rally de FOMO (Retail)",
+      "drift": 0.003,
+      "volatility": 0.016,
+      "horizonBars": 20,
+      "bias": "COMPRAR"
+    },
+    {
+      "id": "range_bound",
+      "name": "Range Lateral sem Direção",
+      "drift": 0.00012,
+      "volatility": 0.0032,
+      "horizonBars": 60,
+      "bias": "AGUARDAR / NEUTRO"
+    },
+    {
+      "id": "mean_reversion_rally",
+      "name": "Reversão à Média Pós-Queda",
+      "drift": 0.00048,
+      "volatility": 0.008,
+      "horizonBars": 40,
+      "bias": "AGUARDAR / NEUTRO"
+    },
+    {
+      "id": "flash_crash_dip_buy",
+      "name": "Flash Crash com Compra da Queda",
+      "drift": -0.0018,
+      "volatility": 0.0128,
+      "horizonBars": 30,
+      "bias": "VENDER"
+    },
+    {
+      "id": "capitulation_climax",
+      "name": "Clímax de Capitulação",
+      "drift": -0.003,
+      "volatility": 0.0192,
+      "horizonBars": 20,
+      "bias": "VENDER"
+    }
+  ],
+  "stressTests": [
+    {
+      "id": "flash_crash",
+      "name": "Flash Crash (-15% em 1h)",
+      "shockPercent": -15,
+      "recoveryBars": 8,
+      "liquidityGap": true
+    },
+    {
+      "id": "liquidity_gap",
+      "name": "Gap de Liquidez L2",
+      "shockPercent": -8,
+      "recoveryBars": 12,
+      "liquidityGap": true
+    },
+    {
+      "id": "funding_drain",
+      "name": "Funding Drain (Shorts Squeeze)",
+      "shockPercent": -5,
+      "recoveryBars": 20,
+      "liquidityGap": false
+    }
+  ]
+}

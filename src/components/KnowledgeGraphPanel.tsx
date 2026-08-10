@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { BrainCircuit, RefreshCw, Wifi, WifiOff, Server, GitBranch, History, Target, AlertTriangle, ChevronRight, X } from 'lucide-react';
+import { BrainCircuit, RefreshCw, Wifi, WifiOff, Server, GitBranch, History, Target, AlertTriangle, ChevronRight, X, Download } from 'lucide-react';
+import { downloadProvODocument } from '../lib/provoExport';
 
 interface KgHealth {
   healthy?: boolean;
@@ -162,6 +163,21 @@ export const KnowledgeGraphPanel: React.FC<KnowledgeGraphPanelProps> = ({ active
           >
             <RefreshCw className={`w-3 h-3 ${loading ? 'animate-spin' : ''}`} />
             Refresh
+          </button>
+          <button
+            onClick={() =>
+              downloadProvODocument(
+                `prov-knowledge-graph-${new Date().toISOString().slice(0, 10)}.ttl`,
+                decisions,
+                { namespace: 'https://vibe-trading.example.org/' }
+              )
+            }
+            disabled={decisions.length === 0}
+            title="Exporta a cadeia de proveniência (W3C PROV-O, Turtle) das decisões do comitê, ensaios MiroFish e diário"
+            className="flex items-center gap-1.5 text-[10px] font-mono px-2.5 py-1 rounded border border-[#24272C] text-[#9CA3AF] hover:border-violet-500/50 hover:text-violet-300 transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            <Download className="w-3 h-3" />
+            Export PROV-O (.ttl)
           </button>
         </div>
       </div>
