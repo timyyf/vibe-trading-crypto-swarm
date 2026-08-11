@@ -1,5 +1,5 @@
 import { GoogleGenAI, Type } from "@google/genai";
-import { SwarmAnalysisResult, TradeDecision } from "../types.js";
+import { SwarmAnalysisResult, TradeDecision, AgentReport } from "../types.js";
 import { runDrQuantGraphEngine } from "./quantEngine.js";
 import { runSofiaSentimentEngine, buildDegradedSentimentReport } from "./sentimentEngine.js";
 import { runOrderBookSentinelEngine, fetchRealDepth } from "./orderbookEngine.js";
@@ -10,6 +10,57 @@ import { getCryptoKlines } from "./cryptoDataService.js";
 import { getWhaleOverview } from "./whaleDataService.js";
 import { computeWeightedVote } from "../lib/weightedVote.js";
 import { computeReview, runReplay, summarizeForPrompt } from "./mirofishService.js";
+import { runDeepSeekAgents } from "./deepseekService.js";
+import {
+  ALL_AGENT_IDS,
+  DEEPSEEK_AGENT_IDS,
+  GEMINI_AGENT_IDS,
+  buildCommitteePrompt,
+  degradedAgent,
+  mergeAndOrderAgents,
+  normalizeAgents,
+} from "./committeePrompt.js";
+
+type EngineSource = 'gemini' | 'deepseek' | 'hybrid' | 'fallback';
+
+// Extrai um resumo curto do motivo de falha de um provedor para o agente degradado.
+function shortReason(reason: unknown): string | undefined {
+  if (reason instanceof Error) return reason.message;
+  return undefined;
+}
+
+interface CommitteeMarketInput {
+  symbol: string;
+  name: string;
+  price: number;
+  change24h: number;
+  volume24h: number;
+  high24h: number;
+  low24h: number;
+  signalDurationMinutes: number;
+  precedents?: string;
+  mirofishPromptSection?: string;
+}
+
+type SettleResult<T> =
+  | { status: 'fulfilled'; value: T }
+  | { status: 'rejected'; reason: unknown };
+
+// Resolve uma promise dentro de um orçamento: se estourar o tempo, devolve
+// rejeitada com motivo honesto (usado no modo híbrido para não segurar a resposta).
+async function settleWithBudget<T>(label: string, promise: Promise<T>, budgetMs: number): Promise<SettleResult<T>> {
+  try {
+    const value = await Promise.race([
+      promise,
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error(`${label} excedeu o orçamento híbrido de ${budgetMs}ms`)), budgetMs)
+      ),
+    ]);
+    return { status: 'fulfilled', value };
+  } catch (reason) {
+    return { status: 'rejected', reason };
+  }
+}
 
 export async function analyzeCryptoWithSwarm(
   symbol: string,
@@ -22,7 +73,10 @@ export async function analyzeCryptoWithSwarm(
   signalDurationMinutes: number = 5,
   precedents?: string
 ): Promise<SwarmAnalysisResult> {
-  const apiKey = process.env.GEMINI_API_KEY;
+  const geminiKey = process.env.GEMINI_API_KEY || process.env.GEMINI_API_KEY_BACKUP;
+  const deepseekKey = process.env.DEEPSEEK_API_KEY;
+  const hasGemini = !!geminiKey;
+  const hasDeepseek = !!deepseekKey;
 
   // Revisão MiroFish: a simulação é consultada como SUPORTE — o veredito final
   // permanece sempre do comitê. A confiança exibida é ponderada (0.7 comitê + 0.3 sim).
@@ -38,317 +92,314 @@ export async function analyzeCryptoWithSwarm(
     return result;
   };
 
-  // Prompt describing the multi-agent committee process (Vibe-Trading Swarm archetype)
-  const prompt = `Você é o ORQUESTRADOR CENTRAL do Comitê Vibe-Trading (HKU Data Science / Institutional Wall Street Framework).
-Sua função é receber a requisição do usuário, distribuir a análise para os 6 AGENTES ESPECIALIZADOS, consolidar seus votos e nível de confiança, e emitir o sinal final.
+  const common: CommitteeMarketInput = {
+    symbol,
+    name,
+    price,
+    change24h,
+    volume24h,
+    high24h,
+    low24h,
+    signalDurationMinutes,
+    precedents,
+    mirofishPromptSection: mirofishPromptSection || undefined,
+  };
 
-DADOS DE MERCADO EM TEMPO REAL:
-- Ativo: ${symbol} (${name})
-- Preço Atual Spot: $${price.toLocaleString('en-US', { minimumFractionDigits: 2 })}
-- Variação 24h: ${change24h > 0 ? '+' : ''}${change24h.toFixed(2)}%
-- Volume 24h: $${(volume24h / 1e6).toFixed(2)}M USD
-- Máxima 24h: $${high24h.toLocaleString('en-US')} | Mínima 24h: $${low24h.toLocaleString('en-US')}
-- Janela de Tempo Operacional Solicitada pelo Trader: ${signalDurationMinutes} minutos.
-${precedents ? `
+  // 1) HÍBRIDO — ambas as chaves presentes: Gemini (3 especialistas) + DeepSeek (3) em PARALELO.
+  if (hasGemini && hasDeepseek) {
+    // Orçamento global: a resposta nunca espera mais que HYBRID_BUDGET_MS pelos dois provedores.
+    // O mais rápido responde na hora; o lento vira DEGRADADO com motivo honesto.
+    const hybridBudgetMs = Number(process.env.HYBRID_BUDGET_MS) || 12000;
+    const [g, d] = await Promise.all([
+      settleWithBudget('Gemini', runGeminiAgents({ ...common, agentIds: GEMINI_AGENT_IDS }), hybridBudgetMs),
+      settleWithBudget('DeepSeek', runDeepSeekAgents({ ...common, agentIds: DEEPSEEK_AGENT_IDS }), hybridBudgetMs),
+    ]);
 
-MEMÓRIA DE LONGO PRAZO (PRECEDENTES HISTÓRICOS DE DECISÕES ANTERIORES):
-${precedents}
-` : ''}
-${mirofishPromptSection ? `
+    // Degradação honesta por lado: provedor que falhou mantém seus agentes com peso reduzido.
+    const geminiAgents = g.status === 'fulfilled'
+      ? g.value
+      : GEMINI_AGENT_IDS.map((id) => degradedAgent(id, 'gemini', shortReason(g.reason)));
+    const deepseekAgents = d.status === 'fulfilled'
+      ? d.value
+      : DEEPSEEK_AGENT_IDS.map((id) => degradedAgent(id, 'deepseek', shortReason(d.reason)));
 
-SUPORTE DE SIMULAÇÃO (MIROFISH — NÃO DECIDE; APENAS APOIO AO COMITÊ):
-${mirofishPromptSection}
-
-A simulação acima é apenas referencial. VOCÊ (orquestrador) é a única autoridade
-decisória: incorpore o consenso da simulação como mais um insumo, mas mantenha o
-veredito final fundamentado nos 6 pareceres reais do comitê.
-` : ''}
-
-DIRETRIZES DOS ESPECIALIZADOS DO COMITÊ:
-
-1. 🎯 "Dr. Quant Graph" — Análise Técnica Quantitativa Sênior:
-   Sua tarefa é analisar o par em múltiplos timeframes (15min, 1h, 4h, 1d).
-   Você deve avaliar rigorosamente:
-   - Momentum: MACD(12,26,9), StochRSI(14,3,3), Williams %R, CCI, Rate of Change (ROC), RSI(14)
-   - Tendência: ADX(14) + DI+/DI-, Parabolic SAR, Ichimoku Cloud, EMAs (20/50/200), SMAs (50/200)
-   - Volatilidade: Bollinger Bands(20,2), Keltner Channels, ATR(14)
-   - Volume: OBV (On-Balance Volume), VWAP, MFI (Money Flow Index)
-   - Multi-Timeframe: Análise simultânea de confluência (15m, 1h, 4h, 1d)
-   - Padrões de Candlestick: Engulfing, Doji, Morning Star, Hammer, Three Black Crows
-   - Níveis de Confluência: Suporte/Resistência dinâmico (Fibonacci, pivôs, S/R por volume)
-   Atribua um score de 0-100 para direção (0=forte venda, 100=forte compra) e justifique com números exatos. Identifique confluências onde 3+ indicadores apontam na mesma direção. NUNCA emita sinal baseado em apenas 1 indicador.
-
-2. 💬 "Sofia Sentiment" — Especialista em Psicologia de Mercado & Dados Alternativos:
-   Sua tarefa é analisar a psicologia do mercado e a dinâmica de sentimentos:
-   - Fear & Greed Index: Compare valor atual com a média móvel de 30 e 90 dias para identificar aceleração ou capitulação.
-   - Social Scraping & NLP (X/Twitter, Reddit r/CryptoCurrency, r/Bitcoin, 4chan /biz/): Análise de sentimento léxico FinBERT (-1.0 a +1.0) e variação de volume de menções.
-   - Google Trends: Análise de momentum de buscas por "buy crypto", "crypto crash", "altcoin season" para medir FOMO/pânico do varejo.
-   - Funding Rate de Perpétuos: Taxas de financiamento na Binance/Bybit (Longs pagando Shorts = Ganância/Alavancagem; Shorts pagando Longs = Medo/Risco de Short Squeeze).
-   - Liquidation Heatmap: Mapeamento de zonas magnéticas de liquidação concentrada de stops.
-   - Alerta de Divergência: Detectar se o preço cai enquanto o sentimento melhora (fundo/acumulação) ou preço sobe enquanto sentimento enfraquece (exaustão).
-   Emita um score composto (0-100) e alertas de divergência claros.
-3. 📊 "OrderBook Sentinel" — Especialista em Microestrutura de Mercado & Leitura de Fluxo L2:
-   Sua tarefa é analisar o livro de ofertas L2 e microestrutura de execução:
-   - Order Book Imbalance (OBI L2): (Volume Bids - Volume Asks) / (Volume Bids + Volume Asks) nos top 8 níveis.
-   - Delta Volume Net & CVD (Cumulative Volume Delta): Saldo de ordens a mercado agressivas (buyers vs sellers).
-   - Volume Profile & Point of Control (POC): Identificação do nível de preço de maior liquidez negociada no range.
-   - Anomalias de Spread & Paredes de Liquidez: Detecção de ordens gigantes/iceberg (>1.6x tamanho médio por nível) e expansão atípica de spread.
-   - Simulação de Slippage: Estimativa de impacto percentual no preço para execuções a mercado de $10k, $50k e $100k USD.
-   - Divergência de Microestrutura: Alerta quando o preço sobe mas o CVD cai (absorção passiva) ou quando o preço cai e o CVD sobe (acumulação).
-   Emita um score de microestrutura (0-100) e parecer detalhado.
-4. 🐋 "Whale Tracker Apex" — Especialista em Inteligência On-Chain & Clustering de Baleias:
-   Sua tarefa é rastrear movimentos de grandes carteiras institucionais e métricas on-chain:
-   - Exchange Netflow (USD): Monitorar entrada (Inflow = pressão de venda) vs saída (Outflow = acumulação em cold wallets).
-   - Whale Wallet Clustering: Agrupar endereços pertencentes à mesma entidade e rastrear transferências internas.
-   - Exchange Whale Ratio: Volume das 10 maiores transações relativo ao volume total (>0.85 = sinal de topo/alerta).
-   - Stablecoin Flows & Mint/Burn: Inflows de USDT/USDC em exchanges ("dry powder") e minting/burning na blockchain.
-   - Métricas On-Chain (MVRV, SOPR, MPI): MVRV Ratio (<1.0 subvalorizado, >3.5 sobreaquecido), SOPR (lucro/prejuízo de moedas gastas) e Miner Position Index.
-   - Estado de Cluster On-Chain: Identificação de fases de acumulação (3+ dias de outflows contínuos) ou distribuição.
-   Emita um score on-chain (0-100) e alertas estratégicos.
-5. 🔬 "Alpha Zoo Engine" — Especialista em Fatores Quantitativos, Backtesting & Regimes de Mercado:
-   Sua tarefa é calcular o universo de fatores quantitativos e modelar a expectativa matemática:
-   - Fatores GTJA-191 & Alpha101: Avaliar os principais alfas de momentum, reversão à média, volatilidade realizada e liquidez (Amihud Illiquidity Ratio).
-   - Neutralização de Risco & Beta: Purificação do alfa através do beta-hedging relativo ao mercado/BTC.
-   - Information Coefficient (IC): Análise do poder preditivo (IC 1d, 5d, 10d) para classificar o ranking dos fatores ativos.
-   - Walk-Forward Backtesting: Simulação rolante (90d treino / 7d teste) com modelagem realista de custos de transação (0.10% em taxas e slippage).
-   - Detecção de Regime HMM (Hidden Markov Model): Mapear se o regime atual favorece estratégias de tendência/momentum ou de reversão à média/faixa.
-   Emita um score quantitativo (0-100), o ranking dos top fatores e relatório de backtest.
-6. 🛡️ "Risk Protocol Officer" — Especialista em Gestão de Risco, Kelly Sizing, VaR/CVaR & Poder de Veto:
-   Sua tarefa é auditar a segurança de capital e exercer o PODER DE VETO se houver risco excessivo:
-   - Tamanho de Posição via Fractional Kelly (Half-Kelly 0.5x) e Volatility Targeting.
-   - Stop Loss Técnico baseado em ATR(14) x 2.0 e Relação Risco/Retorno Mínima (RRR >= 1:2.0).
-   - Métricas de Risco de Cauda: Value at Risk (VaR 95%) e Expected Shortfall (CVaR).
-   - Teste de Estresse Simulando Flash Crash (-15% em 1h), Iliquidez e Funding Drain.
-   - Poder de VETO: Se RRR < 2.0 ou VaR excede os limites, BLOQUEIE a operação imediatamente com justificativa de VETO.
-
-Retorne obrigatoriamente no formato JSON em português com a seguinte estrutura:
-{
-  "finalDecision": "COMPRAR" | "VENDER" | "AGUARDAR / NEUTRO",
-  "confidenceScore": número de 0 a 100,
-  "signalDurationMinutes": ${signalDurationMinutes},
-  "recommendedDurationMinutes": número (0, 1, 3, 5, 10, 15, 20 ou 30 conforme avaliação),
-  "durationJustification": "justificativa técnica minuciosa detalhando volume e volatilidade",
-  "entryTarget": preço de entrada recomendado próximo a $${price},
-  "stopLoss": preço de stop loss,
-  "takeProfit": preço de alvo com RRR de pelo menos 1:2.0,
-  "riskRewardRatio": string ex: "1:2.4",
-  "summaryConsensus": "resumo profissional do consenso dos 6 especialistas em 2-3 frases",
-  "reasoningNotes": ["ponto técnico 1", "ponto fundamental 2", "ponto de risco 3"],
-  "agents": [
-    {
-      "agentId": "technical",
-      "agentName": "Dr. Quant Graph",
-      "agentRole": "Análise Técnica Quantitativa Multi-Timeframe",
-      "opinion": "COMPRAR" | "VENDER" | "AGUARDAR / NEUTRO",
-      "score": número 0-100,
-      "summary": "parecer técnico quantitativo detalhando indicadores de momentum, tendência e volatilidade",
-      "keyMetrics": [
-        {"label": "RSI(14) | StochRSI", "value": "ex: 61.4 | K:78 D:72", "status": "positive"|"negative"|"neutral"},
-        {"label": "MACD (12,26,9)", "value": "ex: +14.2 Histograma (Cruzamento Altista)", "status": "positive"|"negative"|"neutral"},
-        {"label": "ADX (14) / Direction", "value": "ex: 32.4 (DI+ 28.5 > DI- 14.2)", "status": "positive"|"negative"|"neutral"},
-        {"label": "EMAs (20/50/200)", "value": "ex: Preço > EMA20 > EMA50 > EMA200", "status": "positive"|"negative"|"neutral"},
-        {"label": "Bollinger & ATR", "value": "ex: Superior $${high24h} | ATR $${(price * 0.015).toFixed(2)}", "status": "positive"|"negative"|"neutral"},
-        {"label": "VWAP & OBV", "value": "ex: Preço +0.8% acima do VWAP", "status": "positive"|"negative"|"neutral"},
-        {"label": "Padrão & Multi-Timeframe", "value": "ex: Engulfing Altista em 15m | Confluência 4/4", "status": "positive"|"negative"|"neutral"}
-      ],
-      "signals": ["Confluência de 4+ indicadores em alta", "Cruzamento altista no StochRSI e MACD", "Preço sustentado acima da EMA20"]
-    },
-    {
-      "agentId": "sentiment",
-      "agentName": "Sofia Sentiment",
-      "agentRole": "Sentimento Social & Dados Alternativos",
-      "opinion": "COMPRAR" | "VENDER" | "AGUARDAR / NEUTRO",
-      "score": número 0-100,
-      "summary": "parecer de sentimento social e notícias",
-      "keyMetrics": [
-        {"label": "Fear & Greed Index", "value": "ex: 68 (Ganância)", "status": "positive"|"negative"|"neutral"},
-        {"label": "Volume de Menções", "value": "ex: +84% no r/CryptoCurrency", "status": "positive"|"negative"|"neutral"}
-      ],
-      "signals": ["Tom comprador dominante nas mídias"]
-    },
-    {
-      "agentId": "orderbook",
-      "agentName": "OrderBook Sentinel",
-      "agentRole": "Livro de Ofertas & Microestrutura de Liquidez",
-      "opinion": "COMPRAR" | "VENDER" | "AGUARDAR / NEUTRO",
-      "score": número 0-100,
-      "summary": "parecer do livro de ordens",
-      "keyMetrics": [
-        {"label": "Bid/Ask Ratio", "value": "ex: 1.34x (Compradores)", "status": "positive"|"negative"|"neutral"},
-        {"label": "Spread Spot", "value": "ex: 0.02%", "status": "positive"|"negative"|"neutral"}
-      ],
-      "signals": ["Muralha de suporte de compra no livro"]
-    },
-    {
-      "agentId": "whales",
-      "agentName": "Whale Tracker Apex",
-      "agentRole": "Fluxo On-Chain & Liquidez Institucional",
-      "opinion": "COMPRAR" | "VENDER" | "AGUARDAR / NEUTRO",
-      "score": número 0-100,
-      "summary": "parecer de grandes carteiras",
-      "keyMetrics": [
-        {"label": "Fluxo Corretoras", "value": "ex: -$28.5M Saída", "status": "positive"|"negative"|"neutral"},
-        {"label": "Ordens Institucionais", "value": "ex: 14 Blocos Grandes", "status": "positive"|"negative"|"neutral"}
-      ],
-      "signals": ["Acúmulo por baleias em cold wallets"]
-    },
-    {
-      "agentId": "alpha",
-      "agentName": "Alpha Zoo Engine",
-      "agentRole": "Fatores Quantitativos & Backtesting",
-      "opinion": "COMPRAR" | "VENDER" | "AGUARDAR / NEUTRO",
-      "score": número 0-100,
-      "summary": "parecer de fatores estatísticos",
-      "keyMetrics": [
-        {"label": "Win Rate (GTJA-191)", "value": "ex: 66.8%", "status": "positive"|"negative"|"neutral"},
-        {"label": "Sharpe Ratio Est.", "value": "ex: 2.18", "status": "positive"|"negative"|"neutral"}
-      ],
-      "signals": ["Fator Momentum Volatilidade ativo"]
-    },
-    {
-      "agentId": "risk",
-      "agentName": "Risk Protocol Officer",
-      "agentRole": "Gerenciamento de Risco & Parâmetros",
-      "opinion": "COMPRAR" | "VENDER" | "AGUARDAR / NEUTRO",
-      "score": número 0-100,
-      "summary": "parecer de gerenciamento de risco",
-      "keyMetrics": [
-        {"label": "Relação RRR", "value": "ex: 1:2.4", "status": "positive"|"negative"|"neutral"},
-        {"label": "Max Drawdown Est.", "value": "ex: 1.4%", "status": "positive"|"negative"|"neutral"}
-      ],
-      "signals": ["Stop Loss posicionado fora do ruído"]
+    if (g.status === 'fulfilled' || d.status === 'fulfilled') {
+      const agents = mergeAndOrderAgents([...geminiAgents, ...deepseekAgents]);
+      return finalizeWithMirofish(finalizeFromAgents(common, agents, 'hybrid'));
     }
-  ]
-}`;
 
-  if (apiKey) {
+    // Ambos falharam em paralelo → fallback local direto (evita re-tentativa em sequência).
+    const fallbackResult = await fallbackSwarmAnalysis(symbol, name, price, change24h, volume24h, high24h, low24h, signalDurationMinutes);
+    return finalizeWithMirofish(fallbackResult);
+  }
+
+  // 2) APENAS GEMINI (ou Gemini como substituto após falha híbrida).
+  if (hasGemini) {
     try {
-      const ai = new GoogleGenAI({
-        apiKey,
-        httpOptions: {
-          headers: {
-            'User-Agent': 'aistudio-build',
-          },
-        },
-      });
-
-      const responseSchema = {
-        type: Type.OBJECT,
-        properties: {
-          finalDecision: { type: Type.STRING },
-          confidenceScore: { type: Type.NUMBER },
-          signalDurationMinutes: { type: Type.NUMBER },
-          recommendedDurationMinutes: { type: Type.NUMBER },
-          durationJustification: { type: Type.STRING },
-          entryTarget: { type: Type.NUMBER },
-          stopLoss: { type: Type.NUMBER },
-          takeProfit: { type: Type.NUMBER },
-          riskRewardRatio: { type: Type.STRING },
-          summaryConsensus: { type: Type.STRING },
-          reasoningNotes: {
-            type: Type.ARRAY,
-            items: { type: Type.STRING },
-          },
-          agents: {
-            type: Type.ARRAY,
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                agentId: { type: Type.STRING },
-                agentName: { type: Type.STRING },
-                agentRole: { type: Type.STRING },
-                opinion: { type: Type.STRING },
-                score: { type: Type.NUMBER },
-                summary: { type: Type.STRING },
-                keyMetrics: {
-                  type: Type.ARRAY,
-                  items: {
-                    type: Type.OBJECT,
-                    properties: {
-                      label: { type: Type.STRING },
-                      value: { type: Type.STRING },
-                      status: { type: Type.STRING },
-                    },
-                  },
-                },
-                signals: {
-                  type: Type.ARRAY,
-                  items: { type: Type.STRING },
-                },
-              },
-            },
-          },
-        },
-      };
-
-      const parsed = await callGeminiWithRetry(ai, prompt, responseSchema, 1);
-      const now = Date.now();
-      const isNeutralDecision = !parsed.finalDecision || parsed.finalDecision.includes('NEUTRO') || parsed.finalDecision.includes('AGUARDAR');
-      const effectiveDuration = isNeutralDecision ? 0 : (parsed.recommendedDurationMinutes || parsed.signalDurationMinutes || signalDurationMinutes);
-
-      const geminiResult: SwarmAnalysisResult = {
-        assetSymbol: symbol,
-        assetName: name,
-        assetPrice: price,
-        timestamp: now,
-        engineSource: 'gemini' as const,
-        finalDecision: (parsed.finalDecision || 'AGUARDAR / NEUTRO') as TradeDecision,
-        confidenceScore: parsed.confidenceScore ?? 75,
-        signalDurationMinutes: isNeutralDecision ? 0 : signalDurationMinutes,
-        recommendedDurationMinutes: effectiveDuration,
-        durationJustification: isNeutralDecision
-          ? 'Comitê definiu 0 minutos de permanência por considerar a operação AGUARDAR / NEUTRO. Não é seguro abrir posições no momento.'
-          : (parsed.durationJustification || `Comitê definiu a janela segura para ${effectiveDuration} minutos com base nas médias técnicas e volume.`),
-        expiryTimestamp: now + effectiveDuration * 60 * 1000,
-        entryTarget: parsed.entryTarget || price,
-        stopLoss: parsed.stopLoss || (price * (parsed.finalDecision === 'COMPRAR' ? 0.985 : 1.015)),
-        takeProfit: parsed.takeProfit || (price * (parsed.finalDecision === 'COMPRAR' ? 1.03 : 0.97)),
-        riskRewardRatio: parsed.riskRewardRatio || '1:2.0',
-        summaryConsensus: isNeutralDecision
-          ? `O Comitê Vibe-Trading concluiu por AGUARDAR / NEUTRO em ${symbol}. O mercado apresenta incerteza/consolidação, recomendando NÃO ABRIR posições.`
-          : (parsed.summaryConsensus || 'O comitê analisou os fatores técnicos e de mercado para o ativo.'),
-        reasoningNotes: parsed.reasoningNotes || ['Volume sem direção definida', 'Osciladores neutros'],
-        agents: (parsed.agents || []).map((ag: any) => {
-          const procTime = ag.agentId === 'technical' ? 140 : ag.agentId === 'sentiment' ? 210 : ag.agentId === 'whales' ? 175 : 190;
-          const specType = ag.agentId === 'technical' ? 'Técnico' : ag.agentId === 'sentiment' ? 'Analista de Sentimento' : ag.agentId === 'whales' ? 'Fundamentalista' : 'Quant Factor';
-          return {
-            ...ag,
-            avatarIcon: getAgentIcon(ag.agentId),
-            specialistType: specType,
-            processingTimeMs: ag.processingTimeMs || procTime,
-            status: ag.status || 'CONCLUÍDO',
-          };
-        }),
-      };
-      return finalizeWithMirofish(geminiResult);
+      const agents = await runGeminiAgents({ ...common, agentIds: ALL_AGENT_IDS });
+      return finalizeWithMirofish(finalizeFromAgents(common, mergeAndOrderAgents(agents), 'gemini'));
     } catch (err: any) {
-      console.log(`[Gemini API] Notice (${err?.message || 'Model Unavailable'}). Utilizing local high-speed quantitative model fallback.`);
+      console.log(`[Gemini API] Notice (${err?.message || 'Model Unavailable'}). Tentando próximo provedor.`);
     }
   }
 
-  // Smart algorithmic fallback synthesis if GEMINI_API_KEY is not set or network fails
+  // 3) APENAS DEEPSEEK (ou DeepSeek como substituto após falha híbrida).
+  if (hasDeepseek) {
+    try {
+      const agents = await runDeepSeekAgents({ ...common, agentIds: ALL_AGENT_IDS });
+      return finalizeWithMirofish(finalizeFromAgents(common, mergeAndOrderAgents(agents), 'deepseek'));
+    } catch (err: any) {
+      console.log(`[DeepSeek API] Notice (${err?.message || 'Model Unavailable'}). Utilizando modelo local.`);
+    }
+  }
+
+  // 4) FALLBACK LOCAL — engines determinísticos com dados reais.
   const fallbackResult = await fallbackSwarmAnalysis(symbol, name, price, change24h, volume24h, high24h, low24h, signalDurationMinutes);
   return finalizeWithMirofish(fallbackResult);
 }
 
-function getAgentIcon(id: string): string {
-  switch (id) {
-    case 'technical':
-      return 'TrendingUp';
-    case 'sentiment':
-      return 'MessageSquare';
-    case 'orderbook':
-      return 'Sliders';
-    case 'whales':
-      return 'ShieldAlert';
-    case 'alpha':
-      return 'Cpu';
-    case 'risk':
-      return 'Shield';
-    default:
-      return 'Bot';
+// GEMINI ------------------------------------------------------------------
+
+async function runGeminiAgents(params: CommitteeMarketInput & { agentIds: typeof ALL_AGENT_IDS[number][] }): Promise<AgentReport[]> {
+  // Failover de chaves: primária (GEMINI_API_KEY) e, em falha, backup (GEMINI_API_KEY_BACKUP).
+  const keys = [process.env.GEMINI_API_KEY, process.env.GEMINI_API_KEY_BACKUP].filter((k): k is string => !!k);
+  if (!keys.length) throw new Error('GEMINI_API_KEY não configurada');
+
+  const clients = keys.map((apiKey) => new GoogleGenAI({
+    apiKey,
+    httpOptions: {
+      headers: { 'User-Agent': 'aistudio-build' },
+    },
+  }));
+
+  const prompt = buildCommitteePrompt({ ...params, providerLabel: 'Gemini' });
+  // Uma tentativa por chave: 1ª = primária, 2ª = backup (se configurada).
+  const parsed = await callGeminiWithRetry(clients, prompt, COMMITTEE_RESPONSE_SCHEMA, keys.length);
+  const agents = normalizeAgents(parsed?.agents, 'gemini', params.agentIds);
+
+  // Garante cobertura completa dos agentes solicitados (LLM pode omitir algum).
+  const present = new Set(agents.map((a) => a.agentId));
+  for (const id of params.agentIds) {
+    if (!present.has(id)) agents.push(degradedAgent(id, 'gemini'));
   }
+
+  return agents;
 }
+
+const COMMITTEE_RESPONSE_SCHEMA = {
+  type: Type.OBJECT,
+  properties: {
+    finalDecision: { type: Type.STRING },
+    confidenceScore: { type: Type.NUMBER },
+    agents: {
+      type: Type.ARRAY,
+      items: {
+        type: Type.OBJECT,
+        properties: {
+          agentId: { type: Type.STRING },
+          agentName: { type: Type.STRING },
+          agentRole: { type: Type.STRING },
+          opinion: { type: Type.STRING },
+          score: { type: Type.NUMBER },
+          summary: { type: Type.STRING },
+          veto: { type: Type.BOOLEAN },
+          vetoReason: { type: Type.STRING },
+          keyMetrics: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                label: { type: Type.STRING },
+                value: { type: Type.STRING },
+                status: { type: Type.STRING },
+              },
+            },
+          },
+          signals: {
+            type: Type.ARRAY,
+            items: { type: Type.STRING },
+          },
+        },
+      },
+    },
+  },
+};
+
+async function callGeminiWithRetry(clients: GoogleGenAI[], prompt: string, schema: any, retries = 2): Promise<any> {
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    // Rotaciona a chave a cada tentativa: primária primeiro, backup nas próximas.
+    const client = clients[(attempt - 1) % clients.length];
+    try {
+      // 30.0 second timeout to accommodate structured JSON generation under normal load
+      const timeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('Gemini API request timed out')), 30000)
+      );
+
+      const apiPromise = client.models.generateContent({
+        model: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
+        contents: prompt,
+        config: {
+          temperature: 0.2,
+          maxOutputTokens: 1024,
+          responseMimeType: 'application/json',
+          responseSchema: schema,
+        },
+      });
+
+      const response = (await Promise.race([apiPromise, timeoutPromise])) as any;
+
+      if (response && response.text) {
+        return cleanAndParseJson(response.text);
+      }
+    } catch (err: any) {
+      const errMsg = err?.message || String(err);
+      const isTransient =
+        errMsg.includes('503') ||
+        errMsg.includes('high demand') ||
+        errMsg.includes('UNAVAILABLE') ||
+        errMsg.includes('resource exhausted') ||
+        errMsg.includes('429') ||
+        errMsg.includes('timeout') ||
+        errMsg.includes('timed out');
+
+      if (attempt < retries) {
+        // Falha em qualquer chave → tenta a próxima. Backoff apenas em erro transitório.
+        if (isTransient) await new Promise((res) => setTimeout(res, 300 * attempt));
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw new Error('Gemini response was empty or timed out');
+}
+
+// CONSOLIDADOR DETERMINÍSTICO -------------------------------------------------
+
+// Consolida os 6 pareceres dos agentes (Gemini e/ou DeepSeek) no veredito final
+// via votação ponderada (computeWeightedVote) + regras de duração/risco do fallback.
+function finalizeFromAgents(common: CommitteeMarketInput, agents: AgentReport[], engineSource: EngineSource): SwarmAnalysisResult {
+  const now = Date.now();
+  const { symbol, name, price, change24h, volume24h, high24h, low24h, signalDurationMinutes } = common;
+
+  const riskAgent = agents.find((a) => a.agentId === 'risk');
+  const vetoed = riskAgent?.veto === true;
+  const vetoReason = riskAgent?.vetoReason;
+
+  const weightedVote = computeWeightedVote(agents, vetoed);
+  const decision = weightedVote.decision;
+  const isNeutral = decision === 'AGUARDAR / NEUTRO';
+
+  const { evaluatedDuration, durationReason } = computeDurationAndJustification({
+    symbol,
+    price,
+    change24h,
+    volume24h,
+    high24h,
+    low24h,
+    durationMinutes: signalDurationMinutes,
+    isNeutral,
+    vetoed,
+    vetoReason,
+    buyWeight: weightedVote.buyWeight,
+    sellWeight: weightedVote.sellWeight,
+  });
+
+  const providerLabel = engineSource === 'hybrid' ? 'Gemini + DeepSeek' : engineSource === 'deepseek' ? 'DeepSeek' : engineSource === 'gemini' ? 'Gemini' : 'Local';
+  const fmtWeight = (w: number) => (Number.isInteger(w) ? w.toString() : w.toFixed(1));
+  const buyWeight = weightedVote.buyWeight;
+  const sellWeight = weightedVote.sellWeight;
+
+  const entry = price;
+  const stop = price * (decision === 'COMPRAR' ? 0.985 : decision === 'VENDER' ? 1.015 : 1);
+  const tp = price * (decision === 'COMPRAR' ? 1.03 : decision === 'VENDER' ? 0.97 : 1);
+
+  const reasoningNotes = [
+    `Quórum ponderado dos Especialistas: ${fmtWeight(buyWeight)} Compras | ${fmtWeight(sellWeight)} Vendas | Peso total ${fmtWeight(weightedVote.totalWeight)} | Decisão ${decision}.`,
+    `Inferência por IA (${providerLabel}) sobre dados reais de mercado: preço spot, variação 24h e amplitude intraday.`,
+    ...agents.slice(0, 6).map((a) => `${a.agentName} [${a.score}]: ${(a.summary || '').split('.')[0] || 'Sem detalhes fornecidos'}.`),
+  ];
+
+  const summaryConsensus = isNeutral
+    ? vetoed
+      ? `O Comitê Vibe-Trading VETOU a operação em ${symbol}${vetoReason ? `: ${vetoReason}` : ''}. NÃO ABRIR posições.`
+      : `O Comitê Vibe-Trading concluiu por AGUARDAR / NEUTRO em ${symbol}. O mercado apresenta incerteza/consolidação, recomendando NÃO ABRIR posições.`
+    : `O Comitê Vibe-Trading aprovou ${decision} em ${symbol} com peso de quórum ${fmtWeight(Math.max(buyWeight, sellWeight))}/${fmtWeight(weightedVote.totalWeight)} via inferência ${providerLabel}.`;
+
+  return {
+    assetSymbol: symbol,
+    assetName: name,
+    assetPrice: price,
+    timestamp: now,
+    engineSource,
+    finalDecision: decision,
+    confidenceScore: Math.round(weightedVote.confidenceScore),
+    signalDurationMinutes: isNeutral ? 0 : signalDurationMinutes,
+    recommendedDurationMinutes: evaluatedDuration,
+    durationJustification: durationReason,
+    expiryTimestamp: now + evaluatedDuration * 60 * 1000,
+    entryTarget: Number(entry.toFixed(4)),
+    stopLoss: Number(stop.toFixed(4)),
+    takeProfit: Number(tp.toFixed(4)),
+    riskRewardRatio: isNeutral ? 'N/A (NEUTRO)' : '1:2.0',
+    summaryConsensus,
+    reasoningNotes,
+    agents,
+  };
+}
+
+// Regras determinísticas de duração segura (compartilhadas com o fallback local).
+function computeDurationAndJustification(params: {
+  symbol: string;
+  price: number;
+  change24h: number;
+  volume24h: number;
+  high24h: number;
+  low24h: number;
+  durationMinutes: number;
+  isNeutral: boolean;
+  vetoed: boolean;
+  vetoReason?: string;
+  buyWeight: number;
+  sellWeight: number;
+}): { evaluatedDuration: number; durationReason: string } {
+  const { symbol, price, change24h, volume24h, high24h, low24h, durationMinutes, isNeutral, vetoed, vetoReason, buyWeight, sellWeight } = params;
+  const priceSpreadPct = price > 0 ? ((high24h - low24h) / price) * 100 : 0;
+  const isHighVolume = volume24h > 150000000;
+  const isStrongTrend = Math.abs(change24h) >= 2.0;
+  const fmtWeight = (w: number) => (Number.isInteger(w) ? w.toString() : w.toFixed(1));
+
+  if (isNeutral) {
+    return {
+      evaluatedDuration: 0,
+      durationReason: vetoed
+        ? `Comitê definiu 0 minutos de permanência devido ao VETO do Risk Officer${vetoReason ? ` (${vetoReason})` : ''}.`
+        : `Comitê definiu 0 minutos de permanência pois o quórum ponderado mínimo (2/3 do peso total) não foi alcançado (${fmtWeight(buyWeight)} Compras / ${fmtWeight(sellWeight)} Vendas).`,
+    };
+  }
+
+  if (priceSpreadPct > 4.5 || Math.abs(change24h) > 6.0) {
+    const d = durationMinutes <= 3 ? 1 : 3;
+    return {
+      evaluatedDuration: d,
+      durationReason: `Comitê reduziu a permanência para ${d}m (Micro-Scalp): A alta volatilidade e amplitude intraday (${priceSpreadPct.toFixed(1)}%) aumentam o risco de exaustão da kline. O trader deve realizar o lucro rápido antes de uma reação contrária.`,
+    };
+  }
+
+  if (isHighVolume && isStrongTrend && priceSpreadPct <= 3.8) {
+    const d = durationMinutes < 10 ? 10 : 15;
+    return {
+      evaluatedDuration: d,
+      durationReason: `Comitê aprovou a extensão do tempo seguro para ${d}m: O volume expressivo ($${(volume24h / 1e6).toFixed(0)}M) acompanhado de tendência firme e volatilidade controlada (${priceSpreadPct.toFixed(1)}%) comprovam sustentação sólida para alcançar o Take Profit sem risco prematuro.`,
+    };
+  }
+
+  return {
+    evaluatedDuration: durationMinutes,
+    durationReason: `Comitê ratificou a janela operacional de ${durationMinutes}m: As condições de volume ($${(volume24h / 1e6).toFixed(0)}M) e estrutura gráfica ajustam-se perfeitamente a esta exposição.`,
+  };
+}
+
+// FALLBACK LOCAL ---------------------------------------------------------------
 
 async function fallbackSwarmAnalysis(
   symbol: string,
@@ -370,9 +421,6 @@ async function fallbackSwarmAnalysis(
       new Promise<null>((resolve) => setTimeout(() => resolve(null), deadlineMs)),
     ]);
 
-  // Get real klines & external feeds in PARALELO (dados reais, sem fabricação).
-  // Cada feed respeita um deadline; quem estourar degrada (klines -> [], depth/whale -> null,
-  // sentiment -> relatório DEGRADADO honesto).
   const [klines, sentimentRes, depth, whaleSnapshot] = await Promise.all([
     withDeadline(getCryptoKlines(symbol, '15m', 40)),
     withDeadline(runSofiaSentimentEngine(symbol, price, change24h, volume24h, high24h, low24h)),
@@ -383,17 +431,14 @@ async function fallbackSwarmAnalysis(
   const klinesSafe = klines ?? [];
   const sofiaSentiment = sentimentRes ?? buildDegradedSentimentReport(symbol);
 
-  // Execute Specialized Engines (compute local rápido; depth já veio da rede acima)
   const drQuant = runDrQuantGraphEngine(symbol, price, change24h, volume24h, high24h, low24h, klinesSafe);
   const orderbookSentinel = await runOrderBookSentinelEngine(symbol, price, change24h, volume24h, high24h, low24h, klinesSafe, depth);
   const whaleApex = runWhaleTrackerApexEngine(symbol, price, change24h, volume24h, high24h, low24h, whaleSnapshot);
   const alphaZoo = runAlphaZooEngine(symbol, price, change24h, volume24h, high24h, low24h, klinesSafe);
 
-  // Preliminary direction before Risk Audit
   const preliminaryDirection: TradeDecision = change24h > 0.5 ? 'COMPRAR' : change24h < -2.0 ? 'VENDER' : 'AGUARDAR / NEUTRO';
   const riskOfficer = runRiskProtocolOfficerEngine(symbol, price, change24h, volume24h, high24h, low24h, klinesSafe, preliminaryDirection);
 
-  // Count quorum consensus across the 6 agents
   const allAgents = [
     drQuant.report,
     sofiaSentiment.report,
@@ -403,7 +448,6 @@ async function fallbackSwarmAnalysis(
     riskOfficer.report,
   ];
 
-  // Votação ponderada: agentes DEGRADADO pesam 0.5 (quórum ajustado proporcionalmente).
   const weightedVote = computeWeightedVote(allAgents, !!riskOfficer.summary.isVetoedByRiskOfficer);
   const buyVotes = weightedVote.buyWeight;
   const sellVotes = weightedVote.sellWeight;
@@ -416,39 +460,29 @@ async function fallbackSwarmAnalysis(
   const stop = riskOfficer.summary.technicalStopLossUSD;
   const tp = riskOfficer.summary.takeProfitTargetUSD;
 
-  // Quantitative evaluation of trade potential & optimal safe duration
-  const priceSpreadPct = price > 0 ? ((high24h - low24h) / price) * 100 : 0;
-  const isHighVolume = volume24h > 150000000;
-  const isStrongTrend = Math.abs(change24h) >= 2.0;
+  const { evaluatedDuration, durationReason } = computeDurationAndJustification({
+    symbol,
+    price,
+    change24h,
+    volume24h,
+    high24h,
+    low24h,
+    durationMinutes,
+    isNeutral,
+    vetoed: !!riskOfficer.summary.isVetoedByRiskOfficer,
+    vetoReason: riskOfficer.summary.vetoReason,
+    buyWeight: buyVotes,
+    sellWeight: sellVotes,
+  });
 
-  // Formatação amigável dos pesos (3.5 -> "3.5", 4 -> "4")
   const fmtWeight = (w: number) => (Number.isInteger(w) ? w.toString() : w.toFixed(1));
-
-  let evaluatedDuration = durationMinutes;
-  let durationReason = '';
-
-  if (isNeutral) {
-    evaluatedDuration = 0;
-    durationReason = riskOfficer.summary.isVetoedByRiskOfficer
-      ? `Comitê definiu 0 minutos de permanência devido ao VETO do Risk Officer (${riskOfficer.summary.vetoReason}).`
-      : `Comitê definiu 0 minutos de permanência pois o quórum ponderado mínimo (2/3 do peso total) não foi alcançado (${fmtWeight(buyVotes)} Compras / ${fmtWeight(sellVotes)} Vendas).`;
-  } else if (priceSpreadPct > 4.5 || Math.abs(change24h) > 6.0) {
-    evaluatedDuration = durationMinutes <= 3 ? 1 : 3;
-    durationReason = `Comitê reduziu a permanência para ${evaluatedDuration}m (Micro-Scalp): A alta volatilidade e amplitude intraday (${priceSpreadPct.toFixed(1)}%) aumentam o risco de exaustão da kline. O trader deve realizar o lucro rápido antes de uma reação contrária.`;
-  } else if (isHighVolume && isStrongTrend && priceSpreadPct <= 3.8) {
-    evaluatedDuration = durationMinutes < 10 ? 10 : 15;
-    durationReason = `Comitê aprovou a extensão do tempo seguro para ${evaluatedDuration}m: O volume expressivo ($${(volume24h / 1e6).toFixed(0)}M) acompanhado de tendência firme e volatilidade controlada (${priceSpreadPct.toFixed(1)}%) comprovam sustentação sólida para alcançar o Take Profit sem risco prematuro.`;
-  } else {
-    evaluatedDuration = durationMinutes;
-    durationReason = `Comitê ratificou a janela operacional de ${durationMinutes}m: As condições de volume ($${(volume24h / 1e6).toFixed(0)}M) e estrutura gráfica ajustam-se perfeitamente a esta exposição.`;
-  }
 
   return {
     assetSymbol: symbol,
     assetName: name,
     assetPrice: price,
     timestamp: now,
-    engineSource: 'fallback' as const,
+    engineSource: 'fallback',
     finalDecision: decision,
     confidenceScore: Math.round(confidence),
     signalDurationMinutes: isNeutral ? 0 : durationMinutes,
@@ -471,7 +505,7 @@ async function fallbackSwarmAnalysis(
       `Alpha Zoo Engine: Regime HMM (${alphaZoo.summary.marketRegime.regimeType.split(' ')[0]}) | Backtest real Win Rate ${alphaZoo.summary.walkForwardWinRate90d}% (Pós-Taxas 0.10%).`,
       `Risk Protocol Officer: RRR 1:${riskOfficer.summary.riskRewardRatio} | Half-Kelly ${riskOfficer.summary.fractionalKellyPositionSizePercent}% ($${riskOfficer.summary.recommendedCapitalAllocationUSD}) | VaR 95% ${riskOfficer.summary.var95Percent}% | Veto Status: ${riskOfficer.summary.isVetoedByRiskOfficer ? '🛑 VETADO' : '✅ APROVADO'}.`,
     ],
-    agents: allAgents,
+    agents: allAgents.map((a) => ({ ...a, provider: 'local' as const })),
   };
 }
 
@@ -492,49 +526,3 @@ function cleanAndParseJson(text: string): any {
     throw err;
   }
 }
-
-async function callGeminiWithRetry(ai: GoogleGenAI, prompt: string, schema: any, retries = 2): Promise<any> {
-  for (let attempt = 1; attempt <= retries; attempt++) {
-    try {
-      // 6.0 second timeout to accommodate structured JSON generation under normal load
-      const timeoutPromise = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error('Gemini API request timed out')), 6000)
-      );
-
-      const apiPromise = ai.models.generateContent({
-        model: 'gemini-2.5-flash',
-        contents: prompt,
-        config: {
-          temperature: 0.2,
-          maxOutputTokens: 2048,
-          responseMimeType: 'application/json',
-          responseSchema: schema,
-        },
-      });
-
-      const response = (await Promise.race([apiPromise, timeoutPromise])) as any;
-
-      if (response && response.text) {
-        return cleanAndParseJson(response.text);
-      }
-    } catch (err: any) {
-      const errMsg = err?.message || String(err);
-      const isTransient =
-        errMsg.includes('503') ||
-        errMsg.includes('high demand') ||
-        errMsg.includes('UNAVAILABLE') ||
-        errMsg.includes('resource exhausted') ||
-        errMsg.includes('429') ||
-        errMsg.includes('timeout') ||
-        errMsg.includes('timed out');
-
-      if (isTransient && attempt < retries) {
-        await new Promise((res) => setTimeout(res, 300 * attempt));
-        continue;
-      }
-      throw err;
-    }
-  }
-  throw new Error('Gemini response was empty or timed out');
-}
-

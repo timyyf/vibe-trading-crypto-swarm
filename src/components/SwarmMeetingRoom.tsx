@@ -566,7 +566,7 @@ export const SwarmMeetingRoom: React.FC<SwarmMeetingRoomProps> = ({
                 </h3>
               </div>
               <p className="text-xs text-[#9CA3AF] font-mono">
-                Sistemas alimentados pelo <span className="text-white font-bold">Gemini 3.6</span>. Exibindo conclusões parciais dos agentes em tempo real para <span className="text-emerald-400 font-bold">{selectedAsset.symbol}/USDT</span> (${selectedAsset.price.toLocaleString()}).
+                Sistemas alimentados pelo <span className="text-white font-bold">Gemini + DeepSeek</span>. Exibindo conclusões parciais dos agentes em tempo real para <span className="text-emerald-400 font-bold">{selectedAsset.symbol}/USDT</span> (${selectedAsset.price.toLocaleString()}).
               </p>
             </div>
 
@@ -716,13 +716,21 @@ export const SwarmMeetingRoom: React.FC<SwarmMeetingRoomProps> = ({
                   <div className="flex items-center gap-1.5">
                     <Users className="w-3.5 h-3.5 text-emerald-400" />
                     <span>Swarm Consensus Engine</span>
-                    {swarmResult.engineSource === 'gemini' ? (
+                    {swarmResult.engineSource === 'hybrid' ? (
+                      <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-violet-500/20 text-violet-300 border border-violet-500/40 font-bold">
+                        Híbrido · Gemini + DeepSeek
+                      </span>
+                    ) : swarmResult.engineSource === 'gemini' ? (
                       <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-violet-500/20 text-violet-300 border border-violet-500/40 font-bold">
                         Gemini API
                       </span>
+                    ) : swarmResult.engineSource === 'deepseek' ? (
+                      <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 font-bold">
+                        DeepSeek API
+                      </span>
                     ) : (
                       <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40 font-bold">
-                        Fallback Local (sem chave Gemini)
+                        Fallback Local (sem chaves de IA)
                       </span>
                     )}
                   </div>
@@ -1142,16 +1150,31 @@ export const SwarmMeetingRoom: React.FC<SwarmMeetingRoomProps> = ({
                     </div>
 
                     {/* Agent Vote Badge */}
-                    <div
-                      className={`px-2 py-0.5 rounded font-mono font-bold text-[10px] uppercase border ${
-                        agent.opinion === 'COMPRAR'
-                          ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
-                          : agent.opinion === 'VENDER'
-                          ? 'bg-rose-500/10 text-rose-400 border-rose-500/30'
-                          : 'bg-amber-500/10 text-amber-400 border-amber-500/30'
-                      }`}
-                    >
-                      {agent.opinion} ({agent.score}%)
+                    <div className="flex flex-col items-end gap-1">
+                      <div
+                        className={`px-2 py-0.5 rounded font-mono font-bold text-[10px] uppercase border ${
+                          agent.opinion === 'COMPRAR'
+                            ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
+                            : agent.opinion === 'VENDER'
+                            ? 'bg-rose-500/10 text-rose-400 border-rose-500/30'
+                            : 'bg-amber-500/10 text-amber-400 border-amber-500/30'
+                        }`}
+                      >
+                        {agent.opinion} ({agent.score}%)
+                      </div>
+                      {agent.provider && (
+                        <span
+                          className={`text-[8px] font-mono px-1 py-0.5 rounded border font-bold ${
+                            agent.provider === 'gemini'
+                              ? 'bg-violet-500/20 text-violet-300 border-violet-500/40'
+                              : agent.provider === 'deepseek'
+                              ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40'
+                              : 'bg-zinc-500/20 text-zinc-300 border-zinc-500/40'
+                          }`}
+                        >
+                          {agent.provider === 'gemini' ? 'Gemini' : agent.provider === 'deepseek' ? 'DeepSeek' : 'Local'}
+                        </span>
+                      )}
                     </div>
                   </div>
 

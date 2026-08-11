@@ -49,6 +49,9 @@ export interface AgentReport {
   signals: string[];
   processingTimeMs?: number;
   status?: 'ONLINE' | 'ANALISANDO' | 'CONCLUÍDO' | 'DEGRADADO';
+  provider?: 'gemini' | 'deepseek' | 'local';
+  veto?: boolean;
+  vetoReason?: string;
 }
 
 // --- MiroFish (simulação de apoio ao comitê — replay determinístico) ---
@@ -149,7 +152,7 @@ export interface SwarmAnalysisResult {
   assetName: string;
   assetPrice: number;
   timestamp: number;
-  engineSource?: 'gemini' | 'fallback';
+  engineSource?: 'gemini' | 'deepseek' | 'hybrid' | 'fallback';
   finalDecision: TradeDecision;
   mirofishReview?: MiroFishReview;
   confidenceScore: number;
@@ -197,7 +200,7 @@ export interface TradeJournalEntry {
   notes: string;
 }
 
-export type AgentComponentId = 'market_feed' | 'gemini_llm' | 'technical' | 'sentiment' | 'orderbook' | 'whales' | 'alpha' | 'risk' | 'semantica_kg';
+export type AgentComponentId = 'market_feed' | 'gemini_llm' | 'deepseek_llm' | 'technical' | 'sentiment' | 'orderbook' | 'whales' | 'alpha' | 'risk' | 'semantica_kg';
 
 export interface AgentDiagnostic {
   id: AgentComponentId;

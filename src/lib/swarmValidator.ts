@@ -238,6 +238,9 @@ export function validateAndSanitizeSwarmResponse(raw: any): ValidationResult {
         signals,
         processingTimeMs: typeof ag?.processingTimeMs === 'number' ? ag.processingTimeMs : 150 + idx * 20,
         status: ag?.status || 'CONCLUÍDO',
+        provider: ['gemini', 'deepseek', 'local'].includes(ag?.provider) ? ag.provider : undefined,
+        veto: ag?.veto === true ? true : undefined,
+        vetoReason: typeof ag?.vetoReason === 'string' ? ag.vetoReason : undefined,
       };
     });
   }
@@ -247,7 +250,9 @@ export function validateAndSanitizeSwarmResponse(raw: any): ValidationResult {
     assetName: fName.value,
     assetPrice: fPrice.value,
     timestamp: fTimestamp.value,
-    engineSource: raw.engineSource === 'gemini' ? ('gemini' as const) : ('fallback' as const),
+    engineSource: ['gemini', 'deepseek', 'hybrid', 'fallback'].includes(raw.engineSource)
+      ? (raw.engineSource as SwarmAnalysisResult['engineSource'])
+      : ('fallback' as const),
     finalDecision: fDecision.value,
     confidenceScore: fConfidence.value,
     signalDurationMinutes: isNeutral ? 0 : fSignalDuration.value,

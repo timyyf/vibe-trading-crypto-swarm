@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   MiroFishCohort,
   MiroFishReview,
@@ -13,13 +14,24 @@ import {
 // Resolução do diretório de worlds (dev, bundle dist e Netlify functions)
 // ---------------------------------------------------------------------------
 
-const WORLDS_DIR_CANDIDATES = () => [
-  path.join(process.cwd(), 'mirofish', 'worlds'),
-  path.join(process.cwd(), 'dist', 'mirofish', 'worlds'),
-  path.join(__dirname, 'mirofish', 'worlds'),
-  path.join(__dirname, '..', 'mirofish', 'worlds'),
-  path.join(__dirname, '..', '..', 'mirofish', 'worlds'),
-];
+const WORLDS_DIR_CANDIDATES = (): string[] => {
+  const candidates = [
+    path.join(process.cwd(), 'mirofish', 'worlds'),
+    path.join(process.cwd(), 'dist', 'mirofish', 'worlds'),
+  ];
+  // __dirname não existe em ESM; deriva do import.meta.url (indisponível em bundles cjs antigos).
+  try {
+    const dir = path.dirname(fileURLToPath(import.meta.url));
+    candidates.push(
+      path.join(dir, 'mirofish', 'worlds'),
+      path.join(dir, '..', 'mirofish', 'worlds'),
+      path.join(dir, '..', '..', 'mirofish', 'worlds'),
+    );
+  } catch {
+    // import.meta.url indisponível — mantém apenas os candidatos por process.cwd().
+  }
+  return candidates;
+};
 
 let cachedDir: string | null | undefined = undefined;
 

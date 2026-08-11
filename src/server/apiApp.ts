@@ -101,11 +101,12 @@ async function probeWithDeadline<T>(
 
 // Real-time diagnostics: mede latência real de cada feed/agente (BTC como sonda).
 async function buildRealDiagnostics(now: number): Promise<AgentDiagnostic[]> {
-  const hasGeminiKey = !!process.env.GEMINI_API_KEY;
+  const hasGeminiKey = !!(process.env.GEMINI_API_KEY || process.env.GEMINI_API_KEY_BACKUP);
+  const hasDeepseekKey = !!process.env.DEEPSEEK_API_KEY;
   const semanticaEnabled = isSemanticaEnabled();
 
   // Sondas externas rodam em PARALELO, cada uma com deadline de 1.5s.
-  const [feedRes, gemRes, klinesRes, sentimentRes, depthRes, whaleFeedRes, semanticaRes] = await Promise.all([
+  const [feedRes, gemRes, deepseekRes, klinesRes, sentimentRes, depthRes, whaleFeedRes, semanticaRes] = await Promise.all([
     probeWithDeadline(() => getTop100CryptoAssets()),
     probeWithDeadline(async () => {
       const controller = new AbortController();
@@ -119,6 +120,21 @@ async function buildRealDiagnostics(now: number): Promise<AgentDiagnostic[]> {
       } catch {
         clearTimeout(timer);
         throw new Error('Gemini endpoint unreachable');
+      }
+    }),
+    probeWithDeadline(async () => {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), PROBE_DEADLINE_MS);
+      try {
+        if (!process.env.DEEPSEEK_API_KEY) throw new Error('DeepSeek key missing');
+        await fetch(`${process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com'}/models`, {
+          headers: { 'Authorization': `Bearer ${process.env.DEEPSEEK_API_KEY}` },
+          signal: controller.signal,
+        });
+        clearTimeout(timer);
+      } catch {
+        clearTimeout(timer);
+        throw new Error('DeepSeek endpoint unreachable');
       }
     }),
     probeWithDeadline(() => getCryptoKlines('BTC', '15m', 60)),
@@ -137,6 +153,13 @@ async function buildRealDiagnostics(now: number): Promise<AgentDiagnostic[]> {
   const gemStatus: AgentDiagnostic['status'] = !hasGeminiKey
     ? 'DEGRADED'
     : gemRes.ok
+    ? 'ONLINE'
+    : 'DEGRADED';
+
+  // DeepSeek: chave presente + endpoint respondeu.
+  const deepseekStatus: AgentDiagnostic['status'] = !hasDeepseekKey
+    ? 'DEGRADED'
+    : deepseekRes.ok
     ? 'ONLINE'
     : 'DEGRADED';
 
@@ -211,6 +234,17 @@ async function buildRealDiagnostics(now: number): Promise<AgentDiagnostic[]> {
       lastChecked: now,
       details: hasGeminiKey
         ? (gemStatus === 'ONLINE' ? 'Endpoint Gemini respondendo. Chave API configurada.' : 'Endpoint Gemini inacessível no momento.')
+        : 'Chave API ausente — comitê em modo fallback local determinístico (dados reais).',
+    },
+    {
+      id: 'deepseek_llm' as const,
+      name: 'Inference Engine (DeepSeek V4 Flash)',
+      type: 'connector' as const,
+      status: deepseekStatus,
+      latencyMs: deepseekRes.lat,
+      lastChecked: now,
+      details: hasDeepseekKey
+        ? (deepseekStatus === 'ONLINE' ? 'Endpoint DeepSeek respondendo. Chave API configurada.' : 'Endpoint DeepSeek inacessível no momento.')
         : 'Chave API ausente — comitê em modo fallback local determinístico (dados reais).',
     },
     {
