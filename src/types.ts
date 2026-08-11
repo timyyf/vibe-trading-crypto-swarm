@@ -200,7 +200,7 @@ export interface TradeJournalEntry {
   notes: string;
 }
 
-export type AgentComponentId = 'market_feed' | 'gemini_llm' | 'deepseek_llm' | 'technical' | 'sentiment' | 'orderbook' | 'whales' | 'alpha' | 'risk' | 'semantica_kg';
+export type AgentComponentId = 'market_feed' | 'gemini_llm' | 'deepseek_llm' | 'technical' | 'sentiment' | 'orderbook' | 'whales' | 'alpha' | 'risk' | 'semantica_kg' | 'bitcoin_whales' | 'defillama';
 
 export interface AgentDiagnostic {
   id: AgentComponentId;
@@ -269,6 +269,54 @@ export interface WhaleOverview {
   topTokens: TopWhaleToken[];
   source: string; // e.g. "Deep Blue Alpha"
   scope: string; // e.g. "Ethereum on-chain"
+  fetchedAt: number;
+}
+
+// --- Mempool.space (bitcoin on-chain, grandes UTXOs) ---
+
+export interface BitcoinWhaleMove {
+  txid: string;
+  blockHeight: number;
+  amountBtc: number;
+  amountUsd: number | null;
+  recipient: string; // scriptpubkey_address da saída baleia
+}
+
+export interface BitcoinWhaleOverview {
+  stats: {
+    blocksScanned: number;
+    latestBlockHeight: number;
+    whaleMoves: number;
+    totalMovedBtc: number;
+    totalMovedUsd: number | null;
+    uniqueRecipients: number;
+  };
+  moves: BitcoinWhaleMove[];
+  source: string; // e.g. "Mempool.space"
+  scope: string;
+  fetchedAt: number;
+}
+
+// --- DefiLlama (fluxos de TVL por protocolo) ---
+
+export interface DefiLlamaMover {
+  name: string;
+  category: string;
+  tvlUsd: number;
+  changePct: number; // variação 24h em %
+  chains: string[];
+}
+
+export interface DefiLlamaFlows {
+  aggregate: {
+    protocolsScanned: number;
+    gainers24h: number;
+    losers24h: number;
+    avgAbsChange24h: number;
+  };
+  topMovers: DefiLlamaMover[];
+  source: string; // e.g. "DefiLlama"
+  scope: string;
   fetchedAt: number;
 }
 

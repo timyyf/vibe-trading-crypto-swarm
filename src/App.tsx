@@ -4,13 +4,15 @@ import { Top100Table } from './components/Top100Table';
 import { SwarmMeetingRoom } from './components/SwarmMeetingRoom';
 import { TradingChart } from './components/TradingChart';
 import { WhaleRadar } from './components/WhaleRadar';
+import { BitcoinWhalePanel } from './components/BitcoinWhalePanel';
+import { DefiLlamaPanel } from './components/DefiLlamaPanel';
 import { AlphaZooPanel } from './components/AlphaZooPanel';
 import { TradeJournal } from './components/TradeJournal';
 import { KnowledgeGraphPanel } from './components/KnowledgeGraphPanel';
 import { SystemWarningToast } from './components/SystemWarningToast';
 import { SystemDiagnosticModal } from './components/SystemDiagnosticModal';
 import { CheckCircle } from 'lucide-react';
-import { CryptoAsset, KlinePoint, WhaleOverview, SwarmAnalysisResult, TradeJournalEntry, AlphaFactor, SystemDiagnosticResult } from './types';
+import { CryptoAsset, KlinePoint, WhaleOverview, BitcoinWhaleOverview, DefiLlamaFlows, SwarmAnalysisResult, TradeJournalEntry, AlphaFactor, SystemDiagnosticResult } from './types';
 import { isStrongSignal, requestNotificationPermission, showSignalNotification } from './lib/notifications';
 import { pruneJournalEntries } from './lib/journal';
 
@@ -50,6 +52,9 @@ export default function App() {
   const [chartTimeframe, setChartTimeframe] = useState<'5m' | '15m' | '1h'>('5m');
   const [klines, setKlines] = useState<KlinePoint[]>([]);
   const [whaleOverview, setWhaleOverview] = useState<WhaleOverview | null>(null);
+  const [bitcoinWhaleOverview, setBitcoinWhaleOverview] = useState<BitcoinWhaleOverview | null>(null);
+  const [defiLlamaFlows, setDefiLlamaFlows] = useState<DefiLlamaFlows | null>(null);
+  const [loadingWhaleIntel, setLoadingWhaleIntel] = useState<boolean>(false);
   const [alphaFactors, setAlphaFactors] = useState<AlphaFactor[]>([]);
 
   const [swarmResult, setSwarmResult] = useState<SwarmAnalysisResult | null>(null);
@@ -299,6 +304,45 @@ export default function App() {
     }
   };
 
+  const fetchBitcoinWhalesData = async () => {
+    try {
+      const res = await fetch('/api/crypto/whales/bitcoin');
+      const contentType = res.headers.get('content-type') || '';
+      if (!res.ok || !contentType.includes('application/json')) {
+        throw new Error('Servidor indisponível');
+      }
+      const json = await res.json();
+      if (json.success) {
+        setBitcoinWhaleOverview(json.data);
+      }
+    } catch (err) {
+      console.error('Failed to load bitcoin whale overview:', err);
+    }
+  };
+
+  const fetchDefiLlamaFlowsData = async () => {
+    try {
+      const res = await fetch('/api/defillama/flows');
+      const contentType = res.headers.get('content-type') || '';
+      if (!res.ok || !contentType.includes('application/json')) {
+        throw new Error('Servidor indisponível');
+      }
+      const json = await res.json();
+      if (json.success) {
+        setDefiLlamaFlows(json.data);
+      }
+    } catch (err) {
+      console.error('Failed to load defillama flows:', err);
+    }
+  };
+
+  // Whale Intelligence (BTC + DeFi) carregado quando a aba Whales abre.
+  useEffect(() => {
+    if (activeTab !== 'whales') return;
+    setLoadingWhaleIntel(true);
+    Promise.all([fetchBitcoinWhalesData(), fetchDefiLlamaFlowsData()]).finally(() => setLoadingWhaleIntel(false));
+  }, [activeTab]);
+
   const fetchAlphaFactors = async () => {
     try {
       const res = await fetch('/api/crypto/alpha-factors');
@@ -496,7 +540,11 @@ export default function App() {
             )}
 
             {activeTab === 'whales' && (
-              <WhaleRadar symbol={activeSymbol} overview={whaleOverview} />
+              <div className="space-y-4">
+                <WhaleRadar symbol={activeSymbol} overview={whaleOverview} />
+                <BitcoinWhalePanel overview={bitcoinWhaleOverview} loading={loadingWhaleIntel} />
+                <DefiLlamaPanel flows={defiLlamaFlows} loading={loadingWhaleIntel} />
+              </div>
             )}
 
             {activeTab === 'alpha' && (

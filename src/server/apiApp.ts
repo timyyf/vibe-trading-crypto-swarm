@@ -3,6 +3,8 @@ import { getTop100CryptoAssets, getCryptoKlines, getSparklinesForSymbols, ALPHA_
 import { analyzeCryptoWithSwarm } from "./geminiService.js";
 import { validateAndSanitizeSwarmResponse, runSwarmTestSuite } from "../lib/swarmValidator.js";
 import { getWhaleOverview } from "./whaleDataService.js";
+import { getBitcoinWhaleOverview } from "./bitcoinWhaleService.js";
+import { getDefiLlamaFlows } from "./defillamaService.js";
 import { runDrQuantGraphEngine, runHMMRegimeDetection, runBacktest } from "./quantEngine.js";
 import { runSofiaSentimentEngine } from "./sentimentEngine.js";
 import { fetchRealDepth } from "./orderbookEngine.js";
@@ -106,9 +108,10 @@ async function buildRealDiagnostics(now: number): Promise<AgentDiagnostic[]> {
   const semanticaEnabled = isSemanticaEnabled();
 
   // Sondas externas rodam em PARALELO, cada uma com deadline de 1.5s
-  // (whale usa 3s: o cold-start de TLS até o Deep Blue Alpha mede ~1.1s+ e
-  // não pode ser marcado como degradado por um deadline apertado demais).
-  const [feedRes, gemRes, deepseekRes, klinesRes, sentimentRes, depthRes, whaleFeedRes, semanticaRes] = await Promise.all([
+  // (whale usa 6s: o fallback GetBlock varre 5 blocos via JSON-RPC em paralelo
+  // e não pode ser marcado como degradado por um deadline apertado demais;
+  // bitcoin_whales/defillama usam 2s e aquecem o cache em background).
+  const [feedRes, gemRes, deepseekRes, klinesRes, sentimentRes, depthRes, whaleFeedRes, semanticaRes, btcWhaleRes, defillamaRes] = await Promise.all([
     probeWithDeadline(() => getTop100CryptoAssets()),
     probeWithDeadline(async () => {
       const controller = new AbortController();
@@ -142,8 +145,10 @@ async function buildRealDiagnostics(now: number): Promise<AgentDiagnostic[]> {
     probeWithDeadline(() => getCryptoKlines('BTC', '15m', 60)),
     probeWithDeadline(() => runSofiaSentimentEngine('BTC', 0, 0, 0, 0, 0)),
     probeWithDeadline(() => fetchRealDepth('BTC')),
-    probeWithDeadline(() => getWhaleOverview(), 3000),
+    probeWithDeadline(() => getWhaleOverview(), 6000),
     probeWithDeadline(() => checkSemanticaHealth()),
+    probeWithDeadline(() => getBitcoinWhaleOverview(), 2000),
+    probeWithDeadline(() => getDefiLlamaFlows(), 2000),
   ]);
 
   // Feed: OK quando retorna ativos; vazio = DEGRADED; timeout/falha = DEGRADED (deadline).
@@ -297,6 +302,28 @@ async function buildRealDiagnostics(now: number): Promise<AgentDiagnostic[]> {
         : 'Fontes on-chain indisponíveis no momento — fluxo de baleias pausado.',
     },
     {
+      id: 'bitcoin_whales' as const,
+      name: 'Bitcoin Whales (Mempool.space)',
+      type: 'connector' as const,
+      status: btcWhaleRes.ok && btcWhaleRes.value !== null ? ('ONLINE' as const) : ('DEGRADED' as const),
+      latencyMs: btcWhaleRes.lat,
+      lastChecked: now,
+      details: btcWhaleRes.ok && btcWhaleRes.value !== null
+        ? `Movimentos de baleias BTC (saídas ≥ 10 BTC) via Mempool.space em ${btcWhaleRes.lat}ms.`
+        : 'Mempool.space indisponível no momento — nenhum movimento fabricado.',
+    },
+    {
+      id: 'defillama' as const,
+      name: 'DefiLlama Flows (Fluxos DeFi 24h)',
+      type: 'connector' as const,
+      status: defillamaRes.ok && defillamaRes.value !== null ? ('ONLINE' as const) : ('DEGRADED' as const),
+      latencyMs: defillamaRes.lat,
+      lastChecked: now,
+      details: defillamaRes.ok && defillamaRes.value !== null
+        ? `Fluxos de TVL 24h por protocolo via DefiLlama em ${defillamaRes.lat}ms.`
+        : 'DefiLlama indisponível no momento — cache frio aquecendo em background.',
+    },
+    {
       id: 'alpha' as const,
       name: 'Alpha Zoo Engine (Fatores Quantitativos)',
       type: 'agent' as const,
@@ -421,6 +448,28 @@ app.get("/api/crypto/whales", async (_req, res) => {
   } catch (err) {
     console.error("Error fetching whale overview:", err);
     res.status(500).json({ success: false, error: "Falha ao carregar agregados on-chain de baleias" });
+  }
+});
+
+// Bitcoin Whale Moves (Mempool.space — grandes UTXOs nos últimos blocos)
+app.get("/api/crypto/whales/bitcoin", async (_req, res) => {
+  try {
+    const overview = await getBitcoinWhaleOverview();
+    res.json({ success: true, data: overview });
+  } catch (err) {
+    console.error("Error fetching bitcoin whale overview:", err);
+    res.status(500).json({ success: false, error: "Falha ao carregar movimentos de baleias BTC" });
+  }
+});
+
+// DefiLlama Flows (fluxos de TVL 24h por protocolo)
+app.get("/api/defillama/flows", async (_req, res) => {
+  try {
+    const flows = await getDefiLlamaFlows();
+    res.json({ success: true, data: flows });
+  } catch (err) {
+    console.error("Error fetching defillama flows:", err);
+    res.status(500).json({ success: false, error: "Falha ao carregar fluxos DeFi" });
   }
 });
 
