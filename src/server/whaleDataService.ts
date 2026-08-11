@@ -89,13 +89,15 @@ async function fetchJson<T>(url: string, timeoutMs = 2500, retries = 1): Promise
 let overviewCache: { data: WhaleOverview | null; fetchedAt: number } = { data: null, fetchedAt: 0 };
 
 /**
- * Agregados on-chain reais de baleias.
+ * Agregados on-chain reais de baleias (escopo Ethereum).
  *
- * Primária: Deep Blue Alpha (sem chave, 3 endpoints públicos, escopo Ethereum).
- * Fallback: Etherscan (com ETHEREUM_API_KEY) — varre os últimos blocos atrás de
- * transferências grandes de ETH (≥ 500 ETH) e infere a direção do fluxo comparando
- * com endereços públicos conhecidos de exchanges (depósito = venda, saque = compra).
- * Nenhum número é fabricado: se ambas as fontes falharem, retorna null (DEGRADADO).
+ * 1º: Deep Blue Alpha (sem chave, 3 endpoints públicos).
+ * 2º: GetBlock RPC (GETBLOCK_ETH_URL) — varre os últimos blocos atrás de
+ *     transferências grandes de ETH e infere a direção do fluxo comparando com
+ *     endereços públicos conhecidos de exchanges.
+ * 3º: Etherscan (ETHEREUM_API_KEY) — mesma heurística de varredura de blocos.
+ *
+ * Nenhum número é fabricado: se todas as fontes falharem, retorna null (DEGRADADO).
  */
 export async function getWhaleOverview(): Promise<WhaleOverview | null> {
   const now = Date.now();
@@ -109,9 +111,14 @@ export async function getWhaleOverview(): Promise<WhaleOverview | null> {
     return dba;
   }
 
+  const getblock = await fetchGetBlockWhaleOverview(now);
+  if (getblock) {
+    overviewCache = { data: getblock, fetchedAt: now };
+    return getblock;
+  }
+
   const fallback = await fetchEtherscanWhaleOverview(now);
   if (fallback) {
-    console.info(`[whale] fallback Etherscan ativo (bloco ${fallback.stats.latestBlock}, ${fallback.topTokens[0]?.wallets ?? 0} carteiras-baleia)`);
     overviewCache = { data: fallback, fetchedAt: now };
     return fallback;
   }
@@ -179,11 +186,12 @@ async function fetchDeepBlueAlphaOverview(now: number): Promise<WhaleOverview | 
   };
 }
 
-// --- Fallback Etherscan (transferências grandes de ETH) ---
+// --- Fallbacks on-chain (GetBlock RPC + Etherscan): varredura de blocos ---
 
 const ETHEREUM_API_KEY = process.env.ETHEREUM_API_KEY || '';
-const WHALE_ETH_THRESHOLD = BigInt(500_000_000_000_000_000_000n); // 500 ETH (em wei)
-const FALLBACK_BLOCKS_SCAN = 4;
+const GETBLOCK_ETH_URL = process.env.GETBLOCK_ETH_URL || '';
+const WHALE_ETH_THRESHOLD = BigInt(50_000_000_000_000_000_000n); // 50 ETH (em wei)
+const FALLBACK_BLOCKS_SCAN = 5;
 const MAX_TXS_PER_BLOCK = 400;
 
 // Endereços públicos de depósito de exchanges (lista curta e bem conhecida).
@@ -220,6 +228,15 @@ interface EtherscanBlockResponse {
   result?: EtherscanBlock | string;
 }
 
+interface WhaleScanResult {
+  wallets: Set<string>;
+  buyEth: bigint;
+  sellEth: bigint;
+  neutralEth: bigint;
+  whaleTransfers: number;
+  latestBlock: bigint;
+}
+
 let ethPriceCache: { usd: number; fetchedAt: number } = { usd: 0, fetchedAt: 0 };
 
 async function getEthPriceUsd(): Promise<number | null> {
@@ -248,41 +265,22 @@ function hexToBigInt(hex: string | undefined): bigint {
   }
 }
 
-function ethUrl(params: string): string {
-  return `${ETH_API}?chainid=1&${params}&apikey=${ETHEREUM_API_KEY}`;
-}
-
-async function getLatestBlockNumber(): Promise<bigint | null> {
-  const res = await fetchJson<{ result?: string }>(ethUrl('module=proxy&action=eth_blockNumber'), 4000, 1);
-  if (!res?.result) return null;
-  const bn = hexToBigInt(res.result);
-  return bn > 0n ? bn : null;
-}
-
-async function getBlockTransactions(blockNumber: bigint): Promise<EtherscanTx[] | null> {
-  const res = await fetchJson<EtherscanBlockResponse>(
-    ethUrl(`module=proxy&action=eth_getBlockByNumber&tag=0x${blockNumber.toString(16)}&boolean=false`),
-    4000,
-    1
-  );
-  const block = typeof res?.result === 'object' ? res.result : undefined;
-  return block?.transactions ?? null;
-}
-
-async function fetchEtherscanWhaleOverview(now: number): Promise<WhaleOverview | null> {
-  if (!ETHEREUM_API_KEY) return null;
-
-  const [ethPriceUsd, latestBlock] = await Promise.all([getEthPriceUsd(), getLatestBlockNumber()]);
-  if (!ethPriceUsd || latestBlock === null) return null;
+// Scan compartilhado entre GetBlock e Etherscan: agregação idêntica, só muda a fonte.
+// Blocos são varridos EM PARALELO (5 blocos de uma vez) para caber no deadline da sonda.
+async function scanWhaleBlocks(
+  getTxs: (blockNumber: bigint) => Promise<EtherscanTx[] | null>,
+  latestBlock: bigint
+): Promise<WhaleScanResult | null> {
+  const blockNumbers = Array.from({ length: FALLBACK_BLOCKS_SCAN }, (_, i) => latestBlock - BigInt(i));
+  const results = await Promise.all(blockNumbers.map((bn) => getTxs(bn)));
 
   const wallets = new Set<string>();
-  let buyEth = 0n; // saques de exchange (pressão de compra)
-  let sellEth = 0n; // depósitos em exchange (pressão de venda)
+  let buyEth = 0n;
+  let sellEth = 0n;
   let neutralEth = 0n;
   let whaleTransfers = 0;
 
-  for (let i = 0; i < FALLBACK_BLOCKS_SCAN; i++) {
-    const txs = await getBlockTransactions(latestBlock - BigInt(i));
+  for (const txs of results) {
     if (!txs) continue;
     for (const tx of txs.slice(0, MAX_TXS_PER_BLOCK)) {
       const value = hexToBigInt(tx.value);
@@ -299,7 +297,17 @@ async function fetchEtherscanWhaleOverview(now: number): Promise<WhaleOverview |
   }
 
   if (whaleTransfers === 0) return null;
+  return { wallets, buyEth, sellEth, neutralEth, whaleTransfers, latestBlock };
+}
 
+function buildWhaleOverviewFromScan(
+  scan: WhaleScanResult,
+  ethPriceUsd: number,
+  now: number,
+  source: string,
+  scope: string
+): WhaleOverview {
+  const { wallets, buyEth, sellEth, neutralEth, whaleTransfers } = scan;
   const totalEth = buyEth + sellEth + neutralEth;
   const netEth = buyEth - sellEth;
   const totalUsd = (Number(totalEth) / 1e18) * ethPriceUsd;
@@ -320,7 +328,7 @@ async function fetchEtherscanWhaleOverview(now: number): Promise<WhaleOverview |
     dexTrades24h: whaleTransfers,
     exchangeFlows24h: whaleTransfers,
     totalVolume24h: totalUsd,
-    latestBlock: Number(latestBlock),
+    latestBlock: Number(scan.latestBlock ?? 0),
   };
 
   const index: WhaleIndexData = {
@@ -349,8 +357,111 @@ async function fetchEtherscanWhaleOverview(now: number): Promise<WhaleOverview |
     stats,
     index,
     topTokens,
-    source: 'Etherscan (fallback)',
-    scope: `Ethereum on-chain — transferências ≥ ${WHALE_ETH_THRESHOLD / 1_000000000000000000n} ETH nos últimos ${FALLBACK_BLOCKS_SCAN} blocos`,
+    source,
+    scope,
     fetchedAt: now,
   };
+}
+
+// --- Fallback GetBlock (JSON-RPC via GETBLOCK_ETH_URL) ---
+
+async function rpcFetch<T>(method: string, params: unknown[], timeoutMs = 4000): Promise<T | null> {
+  if (!GETBLOCK_ETH_URL) return null;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(GETBLOCK_ETH_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'User-Agent': USER_AGENT },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+    if (!res.ok) {
+      console.warn(`[whale] GetBlock HTTP ${res.status} ${res.statusText}`);
+      return null;
+    }
+    return (await res.json()) as T;
+  } catch (err: any) {
+    clearTimeout(timeout);
+    const reason = err?.name === 'AbortError'
+      ? `timeout ${timeoutMs}ms`
+      : `${err?.name ?? 'erro'}: ${err?.message ?? String(err)}`;
+    console.warn(`[whale] GetBlock falha de rede (${reason})`);
+    return null;
+  }
+}
+
+async function fetchGetBlockWhaleOverview(now: number): Promise<WhaleOverview | null> {
+  if (!GETBLOCK_ETH_URL) return null;
+
+  const [ethPriceUsd, latestHex] = await Promise.all([
+    getEthPriceUsd(),
+    rpcFetch<{ result?: string }>('eth_blockNumber', []),
+  ]);
+  const latestBlock = latestHex?.result ? hexToBigInt(latestHex.result) : null;
+  if (!ethPriceUsd || latestBlock === null || latestBlock <= 0n) return null;
+
+  const scan = await scanWhaleBlocks(async (bn) => {
+    const res = await rpcFetch<{ result?: { transactions?: EtherscanTx[] } }>(
+      'eth_getBlockByNumber',
+      [`0x${bn.toString(16)}`, true],
+      5000
+    );
+    return res?.result?.transactions ?? null;
+  }, latestBlock);
+  if (!scan) return null;
+
+  const overview = buildWhaleOverviewFromScan(
+    scan,
+    ethPriceUsd,
+    now,
+    'GetBlock RPC (fallback)',
+    `Ethereum on-chain — transferências ≥ ${WHALE_ETH_THRESHOLD / 1_000_000_000_000_000_000n} ETH nos últimos ${FALLBACK_BLOCKS_SCAN} blocos`
+  );
+  console.info(`[whale] fallback GetBlock ativo (bloco ${overview.stats.latestBlock}, ${scan.wallets.size} carteiras-baleia)`);
+  return overview;
+}
+
+// --- Fallback Etherscan ---
+
+function ethUrl(params: string): string {
+  return `${ETH_API}?chainid=1&${params}&apikey=${ETHEREUM_API_KEY}`;
+}
+
+async function getLatestBlockNumber(): Promise<bigint | null> {
+  const res = await fetchJson<{ result?: string }>(ethUrl('module=proxy&action=eth_blockNumber'), 4000, 1);
+  if (!res?.result) return null;
+  const bn = hexToBigInt(res.result);
+  return bn > 0n ? bn : null;
+}
+
+async function getBlockTransactions(blockNumber: bigint): Promise<EtherscanTx[] | null> {
+  const res = await fetchJson<EtherscanBlockResponse>(
+    ethUrl(`module=proxy&action=eth_getBlockByNumber&tag=0x${blockNumber.toString(16)}&boolean=false`),
+    4000,
+    1
+  );
+  const block = typeof res?.result === 'object' ? res.result : undefined;
+  return block?.transactions ?? null;
+}
+
+async function fetchEtherscanWhaleOverview(now: number): Promise<WhaleOverview | null> {
+  if (!ETHEREUM_API_KEY) return null;
+
+  const [ethPriceUsd, latestBlock] = await Promise.all([getEthPriceUsd(), getLatestBlockNumber()]);
+  if (!ethPriceUsd || latestBlock === null) return null;
+
+  const scan = await scanWhaleBlocks((bn) => getBlockTransactions(bn), latestBlock);
+  if (!scan) return null;
+
+  const overview = buildWhaleOverviewFromScan(
+    scan,
+    ethPriceUsd,
+    now,
+    'Etherscan (fallback)',
+    `Ethereum on-chain — transferências ≥ ${WHALE_ETH_THRESHOLD / 1_000_000_000_000_000_000n} ETH nos últimos ${FALLBACK_BLOCKS_SCAN} blocos`
+  );
+  console.info(`[whale] fallback Etherscan ativo (bloco ${overview.stats.latestBlock}, ${scan.wallets.size} carteiras-baleia)`);
+  return overview;
 }
