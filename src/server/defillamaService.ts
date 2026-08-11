@@ -2,9 +2,9 @@ import { DefiLlamaFlows, DefiLlamaMover } from '../types.js';
 
 const CACHE_TTL_MS = 120 * 1000;
 const TOP_MOVERS = 8;
-// Piso de TVL: evita que protocolos de TVL irrisória (ex.: bridge com US$ 2)
+// Piso de TVL: evita que protocolos de TVL irrisória (ex.: bridge com US$ 1M)
 // apareçam como "+20.000.000%" no ranking — foca fluxos institucionais reais.
-const MIN_TVL_USD = 1_000_000;
+const MIN_TVL_USD = 10_000_000;
 const USER_AGENT = 'vibe-trading-crypto-swarm/1.0';
 
 // DefiLlama tem dois hosts históricos; o primário (api.defillama.com) pode não
