@@ -16,7 +16,7 @@ interface MempoolBlock {
 }
 
 interface MempoolVout {
-  value: number; // em BTC (float)
+  value: number; // em SATOSHIS (inteiro) — a API do Mempool.space usa sats, não BTC
   scriptpubkey_address?: string;
 }
 
@@ -48,31 +48,43 @@ async function fetchJson<T>(url: string, timeoutMs = 5000): Promise<T | null> {
   }
 }
 
+const SATS_PER_BTC = 1e8;
+
+// Fontes de preço com fallback: Binance (pode bloquear IPs de datacenter) ->
+// CoinGecko -> OKX. Mantém o USD calculável mesmo com a Binance inacessível.
+const BTC_PRICE_SOURCES: { url: string; extract: (j: any) => number | null }[] = [
+  { url: 'https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT', extract: (j) => (j?.price ? parseFloat(j.price) : NaN) },
+  { url: 'https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd', extract: (j) => j?.bitcoin?.usd },
+  { url: 'https://www.okx.com/api/v5/market/ticker?instId=BTC-USDT', extract: (j) => parseFloat(j?.data?.[0]?.last) },
+];
+
 async function getBtcPriceUsd(): Promise<number | null> {
   const now = Date.now();
   if (btcPriceCache.usd > 0 && now - btcPriceCache.fetchedAt < CACHE_TTL_MS) {
     return btcPriceCache.usd;
   }
-  const res = await fetchJson<{ symbol?: string; price?: string }>(
-    'https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT',
-    4000
-  );
-  const price = res?.price ? parseFloat(res.price) : NaN;
-  if (!Number.isFinite(price) || price <= 0) return null;
-  btcPriceCache = { usd: price, fetchedAt: now };
-  return price;
+  for (const source of BTC_PRICE_SOURCES) {
+    const res = await fetchJson<any>(source.url, 4000);
+    const price = source.extract(res);
+    if (Number.isFinite(price) && (price as number) > 0) {
+      btcPriceCache = { usd: price as number, fetchedAt: now };
+      return price as number;
+    }
+  }
+  return null;
 }
 
-// Puro e testável: extrai movimentos-baleia (saídas >= threshold) de uma lista de txs.
+// Puro e testável: extrai movimentos-baleia de uma lista de txs.
+// O Mempool.space reporta `vout.value` em satoshis; convertemos para BTC.
 export function filterWhaleMoves(txs: MempoolTx[], thresholdBtc: number, blockHeight: number): BitcoinWhaleMove[] {
   const moves: BitcoinWhaleMove[] = [];
   for (const tx of txs) {
     for (const vout of tx.vout) {
-      if (vout.value >= thresholdBtc && vout.scriptpubkey_address) {
+      if (vout.value >= thresholdBtc * SATS_PER_BTC && vout.scriptpubkey_address) {
         moves.push({
           txid: tx.txid,
           blockHeight,
-          amountBtc: vout.value,
+          amountBtc: Math.round((vout.value / SATS_PER_BTC) * 10000) / 10000,
           amountUsd: null, // preenchido no aggregate
           recipient: vout.scriptpubkey_address,
         });

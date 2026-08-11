@@ -9,8 +9,8 @@ function makeTx(txid: string, outputs: { value: number; addr?: string }[]): any 
 }
 
 describe('bitcoinWhaleService - filtro de movimentos-baleia', () => {
-  it('mantém apenas saídas >= threshold com endereço válido', () => {
-    const txs = [makeTx('a', [{ value: 15 }, { value: 3 }, { value: 20 }])];
+  it('mantém apenas saídas >= threshold (em satoshis) com endereço válido', () => {
+    const txs = [makeTx('a', [{ value: 1_500_000_000 }, { value: 300_000_000 }, { value: 2_000_000_000 }])];
     const moves = filterWhaleMoves(txs, 10, 962000);
     expect(moves.length).toBe(2);
     expect(moves.map((m) => m.amountBtc)).toEqual([15, 20]);
@@ -19,14 +19,14 @@ describe('bitcoinWhaleService - filtro de movimentos-baleia', () => {
   });
 
   it('ignora saídas sem endereço de saída (scriptpubkey_address)', () => {
-    const txs = [makeTx('b', [{ value: 50, addr: '' }])];
+    const txs = [makeTx('b', [{ value: 5_000_000_000, addr: '' }])];
     txs[0].vout[0].scriptpubkey_address = undefined;
     const moves = filterWhaleMoves(txs, 10, 962000);
     expect(moves.length).toBe(0);
   });
 
   it('nenhum movimento quando todas as saídas estão abaixo do limite', () => {
-    const txs = [makeTx('c', [{ value: 9.9 }, { value: 0.5 }])];
+    const txs = [makeTx('c', [{ value: 990_000_000 }, { value: 50_000_000 }])];
     expect(filterWhaleMoves(txs, 10, 962000).length).toBe(0);
   });
 });

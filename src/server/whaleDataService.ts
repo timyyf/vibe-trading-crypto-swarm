@@ -193,7 +193,11 @@ const ETHEREUM_API_KEY = process.env.ETHEREUM_API_KEY || '';
 const GETBLOCK_ETH_URL = process.env.GETBLOCK_ETH_URL || '';
 // Fallbacks keyless: RPCs Ethereum públicos validados que entregam o mesmo
 // eth_getBlockByNumber, para o feed não depender de conta em nenhum provedor.
-const PUBLIC_ETH_RPCS = ['https://ethereum-rpc.publicnode.com', 'https://1rpc.io/eth'];
+const PUBLIC_ETH_RPCS = [
+  'https://ethereum-rpc.publicnode.com',
+  'https://eth-mainnet.public.blastapi.io',
+  'https://1rpc.io/eth',
+];
 const ETH_RPC_HOSTS = [...(GETBLOCK_ETH_URL ? [GETBLOCK_ETH_URL] : []), ...PUBLIC_ETH_RPCS];
 const WHALE_ETH_THRESHOLD = BigInt(50_000_000_000_000_000_000n); // 50 ETH (em wei)
 const FALLBACK_BLOCKS_SCAN = 5;
@@ -244,20 +248,28 @@ interface WhaleScanResult {
 
 let ethPriceCache: { usd: number; fetchedAt: number } = { usd: 0, fetchedAt: 0 };
 
+// Fontes de preço com fallback: Binance (bloqueia IPs de datacenter) ->
+// CoinGecko -> OKX. Mantém o USD calculável mesmo com a Binance inacessível.
+const ETH_PRICE_SOURCES: { url: string; extract: (j: any) => number | null }[] = [
+  { url: 'https://api.binance.com/api/v3/ticker/price?symbol=ETHUSDT', extract: (j) => (j?.price ? parseFloat(j.price) : NaN) },
+  { url: 'https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd', extract: (j) => j?.ethereum?.usd },
+  { url: 'https://www.okx.com/api/v5/market/ticker?instId=ETH-USDT', extract: (j) => parseFloat(j?.data?.[0]?.last) },
+];
+
 async function getEthPriceUsd(): Promise<number | null> {
   const now = Date.now();
   if (ethPriceCache.usd > 0 && now - ethPriceCache.fetchedAt < CACHE_TTL_MS) {
     return ethPriceCache.usd;
   }
-  const res = await fetchJson<{ symbol?: string; price?: string }>(
-    'https://api.binance.com/api/v3/ticker/price?symbol=ETHUSDT',
-    4000,
-    1
-  );
-  const price = res?.price ? parseFloat(res.price) : NaN;
-  if (!Number.isFinite(price) || price <= 0) return null;
-  ethPriceCache = { usd: price, fetchedAt: now };
-  return price;
+  for (const source of ETH_PRICE_SOURCES) {
+    const res = await fetchJson<any>(source.url, 4000, 0);
+    const price = source.extract(res);
+    if (Number.isFinite(price) && (price as number) > 0) {
+      ethPriceCache = { usd: price as number, fetchedAt: now };
+      return price as number;
+    }
+  }
+  return null;
 }
 
 function hexToBigInt(hex: string | undefined): bigint {
