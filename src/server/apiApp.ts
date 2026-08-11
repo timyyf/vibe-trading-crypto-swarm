@@ -194,8 +194,11 @@ async function buildRealDiagnostics(now: number): Promise<AgentDiagnostic[]> {
 
   const tWhale = Date.now();
   let whaleOk = false;
+  let whaleSource: string | null = null;
   try {
-    const whaleReport = runWhaleTrackerApexEngine('BTC', price, 0, 0, high, low, whaleFeedRes.ok ? whaleFeedRes.value! : null);
+    const whaleSnapshot = whaleFeedRes.ok ? whaleFeedRes.value! : null;
+    whaleSource = whaleSnapshot?.source ?? null;
+    const whaleReport = runWhaleTrackerApexEngine('BTC', price, 0, 0, high, low, whaleSnapshot);
     whaleOk = whaleReport.summary !== null;
   } catch { /* mantém DEGRADED */ }
   const whaleLatency = whaleFeedRes.lat + (Date.now() - tWhale);
@@ -290,8 +293,8 @@ async function buildRealDiagnostics(now: number): Promise<AgentDiagnostic[]> {
       latencyMs: whaleLatency,
       lastChecked: now,
       details: whaleOk
-        ? `Agregados on-chain reais (Deep Blue Alpha) em ${whaleLatency}ms.`
-        : 'Deep Blue Alpha indisponível no momento — fluxo on-chain pausado.',
+        ? `Agregados on-chain reais (${whaleSource ?? 'fonte on-chain'}) em ${whaleLatency}ms.`
+        : 'Fontes on-chain indisponíveis no momento — fluxo de baleias pausado.',
     },
     {
       id: 'alpha' as const,
