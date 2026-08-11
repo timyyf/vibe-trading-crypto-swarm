@@ -2,6 +2,9 @@ import { DefiLlamaFlows, DefiLlamaMover } from '../types.js';
 
 const CACHE_TTL_MS = 120 * 1000;
 const TOP_MOVERS = 8;
+// Piso de TVL: evita que protocolos de TVL irrisória (ex.: bridge com US$ 2)
+// apareçam como "+20.000.000%" no ranking — foca fluxos institucionais reais.
+const MIN_TVL_USD = 1_000_000;
 const USER_AGENT = 'vibe-trading-crypto-swarm/1.0';
 
 // DefiLlama tem dois hosts históricos; o primário (api.defillama.com) pode não
@@ -64,7 +67,7 @@ function round2(n: number): number {
 // Puro e testável: ranking dos protocolos com maior variação absoluta de TVL 24h.
 export function rankDefiLlamaMovers(protocols: DefiLlamaProtocol[], topN = TOP_MOVERS): DefiLlamaMover[] {
   return protocols
-    .filter((p) => typeof p.tvl === 'number' && Number.isFinite(p.tvl) && p.tvl > 0 && parseChange(p) !== null)
+    .filter((p) => typeof p.tvl === 'number' && Number.isFinite(p.tvl) && p.tvl >= MIN_TVL_USD && parseChange(p) !== null)
     .sort((a, b) => Math.abs(parseChange(b)!) - Math.abs(parseChange(a)!))
     .slice(0, topN)
     .map((p) => ({
@@ -79,7 +82,7 @@ export function rankDefiLlamaMovers(protocols: DefiLlamaProtocol[], topN = TOP_M
 // Puro e testável: agrega o retrato de fluxos DeFi 24h.
 export function buildDefiLlamaFlows(protocols: DefiLlamaProtocol[], topN = TOP_MOVERS): DefiLlamaFlows | null {
   const withChange = protocols.filter(
-    (p) => typeof p.tvl === 'number' && Number.isFinite(p.tvl) && p.tvl > 0 && parseChange(p) !== null
+    (p) => typeof p.tvl === 'number' && Number.isFinite(p.tvl) && p.tvl >= MIN_TVL_USD && parseChange(p) !== null
   );
   if (withChange.length === 0) return null;
 
