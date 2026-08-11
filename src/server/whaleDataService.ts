@@ -39,21 +39,50 @@ interface TopTokensResponse {
   }[];
 }
 
-async function fetchJson<T>(url: string, timeoutMs = 2500): Promise<T | null> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const res = await fetch(url, {
-      headers: { 'Accept': 'application/json' },
-      signal: controller.signal,
-    });
-    clearTimeout(timeout);
-    if (!res.ok) return null;
-    return (await res.json()) as T;
-  } catch (_err) {
-    clearTimeout(timeout);
-    return null;
+const USER_AGENT = 'vibe-trading-crypto-swarm/1.0';
+const RETRY_DELAY_MS = 250;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Diagnóstico + robustez: loga o status HTTP real ou a razão da falha de rede
+// (DNS vs TLS vs timeout) — hoje o erro é engolido e vira só "DEGRADED".
+// 1 retry curto descarta throttling transitório sem estourar o deadline da sonda.
+async function fetchJson<T>(url: string, timeoutMs = 2500, retries = 1): Promise<T | null> {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const res = await fetch(url, {
+        headers: { 'Accept': 'application/json', 'User-Agent': USER_AGENT },
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
+      if (!res.ok) {
+        console.warn(`[whale] HTTP ${res.status} ${res.statusText} em ${url}`);
+        if (attempt < retries) {
+          await sleep(RETRY_DELAY_MS);
+          continue;
+        }
+        return null;
+      }
+      return (await res.json()) as T;
+    } catch (err: any) {
+      clearTimeout(timeout);
+      const reason =
+        err?.name === 'AbortError'
+          ? `timeout ${timeoutMs}ms`
+          : `${err?.name ?? 'erro'}: ${err?.message ?? String(err)}`;
+      console.warn(`[whale] falha de rede (${reason}) em ${url}`);
+      if (attempt < retries) {
+        await sleep(RETRY_DELAY_MS);
+        continue;
+      }
+      return null;
+    }
   }
+  return null;
 }
 
 let overviewCache: { data: WhaleOverview | null; fetchedAt: number } = { data: null, fetchedAt: 0 };

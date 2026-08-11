@@ -105,7 +105,9 @@ async function buildRealDiagnostics(now: number): Promise<AgentDiagnostic[]> {
   const hasDeepseekKey = !!process.env.DEEPSEEK_API_KEY;
   const semanticaEnabled = isSemanticaEnabled();
 
-  // Sondas externas rodam em PARALELO, cada uma com deadline de 1.5s.
+  // Sondas externas rodam em PARALELO, cada uma com deadline de 1.5s
+  // (whale usa 3s: o cold-start de TLS até o Deep Blue Alpha mede ~1.1s+ e
+  // não pode ser marcado como degradado por um deadline apertado demais).
   const [feedRes, gemRes, deepseekRes, klinesRes, sentimentRes, depthRes, whaleFeedRes, semanticaRes] = await Promise.all([
     probeWithDeadline(() => getTop100CryptoAssets()),
     probeWithDeadline(async () => {
@@ -140,7 +142,7 @@ async function buildRealDiagnostics(now: number): Promise<AgentDiagnostic[]> {
     probeWithDeadline(() => getCryptoKlines('BTC', '15m', 60)),
     probeWithDeadline(() => runSofiaSentimentEngine('BTC', 0, 0, 0, 0, 0)),
     probeWithDeadline(() => fetchRealDepth('BTC')),
-    probeWithDeadline(() => getWhaleOverview()),
+    probeWithDeadline(() => getWhaleOverview(), 3000),
     probeWithDeadline(() => checkSemanticaHealth()),
   ]);
 
