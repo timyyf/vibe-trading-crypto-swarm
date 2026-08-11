@@ -92,7 +92,8 @@ let overviewCache: { data: WhaleOverview | null; fetchedAt: number } = { data: n
  * Agregados on-chain reais de baleias (escopo Ethereum).
  *
  * 1º: Deep Blue Alpha (sem chave, 3 endpoints públicos).
- * 2º: GetBlock RPC (GETBLOCK_ETH_URL) — varre os últimos blocos atrás de
+ * 2º: JSON-RPC (GETBLOCK_ETH_URL se definida, senão RPCs Ethereum públicos
+ *     keyless publicnode.com / 1rpc.io) — varre os últimos blocos atrás de
  *     transferências grandes de ETH e infere a direção do fluxo comparando com
  *     endereços públicos conhecidos de exchanges.
  * 3º: Etherscan (ETHEREUM_API_KEY) — mesma heurística de varredura de blocos.
@@ -190,6 +191,10 @@ async function fetchDeepBlueAlphaOverview(now: number): Promise<WhaleOverview | 
 
 const ETHEREUM_API_KEY = process.env.ETHEREUM_API_KEY || '';
 const GETBLOCK_ETH_URL = process.env.GETBLOCK_ETH_URL || '';
+// Fallbacks keyless: RPCs Ethereum públicos validados que entregam o mesmo
+// eth_getBlockByNumber, para o feed não depender de conta em nenhum provedor.
+const PUBLIC_ETH_RPCS = ['https://ethereum-rpc.publicnode.com', 'https://1rpc.io/eth'];
+const ETH_RPC_HOSTS = [...(GETBLOCK_ETH_URL ? [GETBLOCK_ETH_URL] : []), ...PUBLIC_ETH_RPCS];
 const WHALE_ETH_THRESHOLD = BigInt(50_000_000_000_000_000_000n); // 50 ETH (em wei)
 const FALLBACK_BLOCKS_SCAN = 5;
 const MAX_TXS_PER_BLOCK = 400;
@@ -363,14 +368,13 @@ function buildWhaleOverviewFromScan(
   };
 }
 
-// --- Fallback GetBlock (JSON-RPC via GETBLOCK_ETH_URL) ---
+// --- Fallback JSON-RPC (GetBlock via env OU RPCs públicos keyless) ---
 
-async function rpcFetch<T>(method: string, params: unknown[], timeoutMs = 4000): Promise<T | null> {
-  if (!GETBLOCK_ETH_URL) return null;
+async function rpcFetch<T>(host: string, method: string, params: unknown[], timeoutMs = 4000): Promise<T | null> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await fetch(GETBLOCK_ETH_URL, {
+    const res = await fetch(host, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'User-Agent': USER_AGENT },
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
@@ -378,7 +382,7 @@ async function rpcFetch<T>(method: string, params: unknown[], timeoutMs = 4000):
     });
     clearTimeout(timeout);
     if (!res.ok) {
-      console.warn(`[whale] GetBlock HTTP ${res.status} ${res.statusText}`);
+      console.warn(`[whale] RPC ${host} HTTP ${res.status} ${res.statusText}`);
       return null;
     }
     return (await res.json()) as T;
@@ -387,40 +391,46 @@ async function rpcFetch<T>(method: string, params: unknown[], timeoutMs = 4000):
     const reason = err?.name === 'AbortError'
       ? `timeout ${timeoutMs}ms`
       : `${err?.name ?? 'erro'}: ${err?.message ?? String(err)}`;
-    console.warn(`[whale] GetBlock falha de rede (${reason})`);
+    console.warn(`[whale] RPC ${host} falha de rede (${reason})`);
     return null;
   }
 }
 
+function rpcSourceLabel(host: string): string {
+  return host.includes('getblock') ? 'GetBlock RPC' : `Public RPC (${host.replace('https://', '').replace('.com', '').replace('.io', '')})`;
+}
+
 async function fetchGetBlockWhaleOverview(now: number): Promise<WhaleOverview | null> {
-  if (!GETBLOCK_ETH_URL) return null;
+  const ethPriceUsd = await getEthPriceUsd();
+  if (!ethPriceUsd) return null;
 
-  const [ethPriceUsd, latestHex] = await Promise.all([
-    getEthPriceUsd(),
-    rpcFetch<{ result?: string }>('eth_blockNumber', []),
-  ]);
-  const latestBlock = latestHex?.result ? hexToBigInt(latestHex.result) : null;
-  if (!ethPriceUsd || latestBlock === null || latestBlock <= 0n) return null;
+  for (const host of ETH_RPC_HOSTS) {
+    const latestHex = await rpcFetch<{ result?: string }>(host, 'eth_blockNumber', [], 5000);
+    const latestBlock = latestHex?.result ? hexToBigInt(latestHex.result) : null;
+    if (!latestBlock || latestBlock <= 0n) continue;
 
-  const scan = await scanWhaleBlocks(async (bn) => {
-    const res = await rpcFetch<{ result?: { transactions?: EtherscanTx[] } }>(
-      'eth_getBlockByNumber',
-      [`0x${bn.toString(16)}`, true],
-      5000
+    const scan = await scanWhaleBlocks(async (bn) => {
+      const res = await rpcFetch<{ result?: { transactions?: EtherscanTx[] } }>(
+        host,
+        'eth_getBlockByNumber',
+        [`0x${bn.toString(16)}`, true],
+        6000
+      );
+      return res?.result?.transactions ?? null;
+    }, latestBlock);
+    if (!scan) continue;
+
+    const overview = buildWhaleOverviewFromScan(
+      scan,
+      ethPriceUsd,
+      now,
+      rpcSourceLabel(host),
+      `Ethereum on-chain — transferências ≥ ${WHALE_ETH_THRESHOLD / 1_000_000_000_000_000_000n} ETH nos últimos ${FALLBACK_BLOCKS_SCAN} blocos`
     );
-    return res?.result?.transactions ?? null;
-  }, latestBlock);
-  if (!scan) return null;
-
-  const overview = buildWhaleOverviewFromScan(
-    scan,
-    ethPriceUsd,
-    now,
-    'GetBlock RPC (fallback)',
-    `Ethereum on-chain — transferências ≥ ${WHALE_ETH_THRESHOLD / 1_000_000_000_000_000_000n} ETH nos últimos ${FALLBACK_BLOCKS_SCAN} blocos`
-  );
-  console.info(`[whale] fallback GetBlock ativo (bloco ${overview.stats.latestBlock}, ${scan.wallets.size} carteiras-baleia)`);
-  return overview;
+    console.info(`[whale] fallback RPC ativo (${host}, bloco ${overview.stats.latestBlock}, ${scan.wallets.size} carteiras-baleia)`);
+    return overview;
+  }
+  return null;
 }
 
 // --- Fallback Etherscan ---
