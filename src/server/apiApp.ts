@@ -110,9 +110,11 @@ async function buildRealDiagnostics(now: number): Promise<AgentDiagnostic[]> {
   // Sondas externas rodam em PARALELO, cada uma com deadline de 1.5s
   // (whale usa 6s: o fallback GetBlock varre 5 blocos via JSON-RPC em paralelo
   // e não pode ser marcado como degradado por um deadline apertado demais;
-  // bitcoin_whales/defillama usam 2s e aquecem o cache em background).
+  // bitcoin_whales/defillama usam 2s e aquecem o cache em background;
+  // market feed usa 6s: o ticker 24h da Binance devolve ~1.8MB e leva 4-7s,
+  // um deadline de 1.5s gerava falso DEGRADED com o feed real funcionando).
   const [feedRes, gemRes, deepseekRes, klinesRes, sentimentRes, depthRes, whaleFeedRes, semanticaRes, btcWhaleRes, defillamaRes] = await Promise.all([
-    probeWithDeadline(() => getTop100CryptoAssets()),
+    probeWithDeadline(() => getTop100CryptoAssets(), 6000),
     probeWithDeadline(async () => {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), PROBE_DEADLINE_MS);
@@ -237,7 +239,7 @@ async function buildRealDiagnostics(now: number): Promise<AgentDiagnostic[]> {
     },
     {
       id: 'gemini_llm' as const,
-      name: 'Inference Engine (Gemini 2.5 Flash)',
+      name: 'Inference Engine (Gemini — cadeia de fallback 3.5/lite/3.7)',
       type: 'connector' as const,
       status: gemStatus,
       latencyMs: gemRes.lat,
