@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useRef } from 'react';
 import { ShieldAlert, Cpu, Activity, Wifi, X, RefreshCw, AlertTriangle, CheckCircle2, Server, Radio } from 'lucide-react';
 import { SystemDiagnosticResult } from '../types';
 
@@ -17,21 +17,41 @@ export const SystemDiagnosticModal: React.FC<SystemDiagnosticModalProps> = ({
   isChecking,
   onRunDiagnosticNow,
 }) => {
+  const panelRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    panelRef.current?.focus();
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isOpen, onClose]);
+
   if (!isOpen) return null;
 
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm animate-fadeIn">
-      <div className="bg-[#121417] border border-[#24272C] rounded-lg w-full max-w-2xl overflow-hidden shadow-2xl font-mono text-[#D1D5DB]">
+      <div
+        ref={panelRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="sys-diag-title"
+        tabIndex={-1}
+        className="bg-[#121417] border border-[#24272C] rounded-lg w-full max-w-2xl overflow-hidden shadow-2xl font-mono text-[#D1D5DB] outline-none"
+      >
         {/* Modal Header */}
         <div className="flex items-center justify-between px-4 py-3 bg-[#1C1F24] border-b border-[#24272C]">
           <div className="flex items-center gap-2">
             <Activity className="w-4 h-4 text-emerald-400 animate-pulse" />
-            <h3 className="text-xs font-bold uppercase tracking-wider text-white">
+            <h3 id="sys-diag-title" className="text-xs font-bold uppercase tracking-wider text-white">
               Autodiagnóstico do Sistema & Status dos Agentes
             </h3>
           </div>
           <button
             onClick={onClose}
+            aria-label="Fechar autodiagnóstico"
             className="text-slate-400 hover:text-white p-1 rounded hover:bg-[#24272C] transition-colors"
           >
             <X className="w-4 h-4" />

@@ -151,6 +151,8 @@ export const Header: React.FC<HeaderProps> = ({
           {/* Notification Toggle */}
           <button
             onClick={onToggleNotifications}
+            aria-pressed={notificationsEnabled}
+            aria-label={notificationsEnabled ? 'Desativar notificações' : 'Ativar notificações'}
             className={`text-[10px] font-mono px-2.5 py-1 rounded border flex items-center gap-1.5 transition-all cursor-pointer ${
               notificationsEnabled
                 ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/20'

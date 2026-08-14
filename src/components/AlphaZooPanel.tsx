@@ -43,8 +43,9 @@ export const AlphaZooPanel: React.FC<AlphaZooPanelProps> = ({ factors, symbol, s
   };
 
   // Derive HMM Market Regime parameters based on asset price movement / volatility
-  const change24h = selectedAsset?.change24h ?? 2.45;
-  const absChange = Math.abs(change24h);
+  const change24h = selectedAsset?.change24h ?? null;
+  const absChange = change24h === null ? 0 : Math.abs(change24h);
+  const isDemoMode = change24h === null || factors.length === 0;
 
   let regimeType: 'MOMENTUM' | 'MEAN_REVERSION' | 'HIGH_VOLATILITY' = 'MOMENTUM';
   if (absChange < 1.8) {
@@ -97,6 +98,12 @@ export const AlphaZooPanel: React.FC<AlphaZooPanelProps> = ({ factors, symbol, s
             <Award className="w-3.5 h-3.5 text-amber-400" />
             <span>Engines: GTJA191 + Alpha101 + HMM</span>
           </div>
+          {isDemoMode && (
+            <div className="flex items-center gap-1.5 bg-amber-500/10 px-2.5 py-1 rounded border border-amber-500/40 text-[10px] text-amber-400 font-mono uppercase">
+              <ShieldAlert className="w-3.5 h-3.5" />
+              <span>Modo Demo — Dados de Exemplo (não reais)</span>
+            </div>
+          )}
         </div>
       </div>
 
@@ -269,15 +276,15 @@ export const AlphaZooPanel: React.FC<AlphaZooPanelProps> = ({ factors, symbol, s
             <div className="grid grid-cols-3 gap-2 text-center font-mono">
               <div className="bg-[#0A0B0D] p-1.5 rounded border border-[#24272C]">
                 <div className="text-[9px] text-[#6B7280] uppercase">Estabilidade HMM</div>
-                <div className="font-bold text-emerald-400 text-xs mt-0.5">0.94 P(S_t)</div>
+                <div className="font-bold text-emerald-400 text-xs mt-0.5">{isDemoMode ? '—' : '0.94 P(S_t)'}</div>
               </div>
               <div className="bg-[#0A0B0D] p-1.5 rounded border border-[#24272C]">
                 <div className="text-[9px] text-[#6B7280] uppercase">IC Médio Esperado</div>
-                <div className="font-bold text-cyan-400 text-xs mt-0.5">+0.104 IC 5d</div>
+                <div className="font-bold text-cyan-400 text-xs mt-0.5">{isDemoMode ? '—' : '+0.104 IC 5d'}</div>
               </div>
               <div className="bg-[#0A0B0D] p-1.5 rounded border border-[#24272C]">
                 <div className="text-[9px] text-[#6B7280] uppercase">Decay Média Vida</div>
-                <div className="font-bold text-amber-400 text-xs mt-0.5">6.8 Horas</div>
+                <div className="font-bold text-amber-400 text-xs mt-0.5">{isDemoMode ? '—' : '6.8 Horas'}</div>
               </div>
             </div>
           </div>
@@ -382,6 +389,9 @@ export const AlphaZooPanel: React.FC<AlphaZooPanelProps> = ({ factors, symbol, s
               </div>
               <p className="text-[11px] text-[#D1D5DB] leading-relaxed">
                 Factor <span className="text-white font-bold">{selectedFactor.name}</span> tested across 90d train / 7d test rolling windows for {symbol} under regime <span className="text-emerald-400 font-bold">{regimeType}</span>. Confirmed expected yield of <span className="text-emerald-400 font-bold">+14.8% net return</span> with profit factor <span className="text-indigo-400 font-bold">2.18</span>.
+              </p>
+              <p className="text-[10px] text-amber-400 leading-relaxed">
+                ⚠ Resultado SIMULADO (frontend) para fins de demonstração — não reflete um backtest real executado em dados históricos.
               </p>
             </div>
           )}

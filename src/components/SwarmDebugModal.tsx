@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Bug,
   CheckCircle2,
@@ -47,6 +47,18 @@ export const SwarmDebugModal: React.FC<SwarmDebugModalProps> = ({
     }
   }, [lastAnalysisResult]);
 
+  const panelRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    panelRef.current?.focus();
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isOpen, onClose]);
+
   if (!isOpen) return null;
 
   const handleRunSuite = async () => {
@@ -90,7 +102,14 @@ export const SwarmDebugModal: React.FC<SwarmDebugModalProps> = ({
 
   return (
     <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4">
-      <div className="bg-[#121418] border border-[#24272C] rounded-xl w-full max-w-5xl max-h-[90vh] flex flex-col shadow-2xl overflow-hidden">
+      <div
+        ref={panelRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="swarm-debug-title"
+        tabIndex={-1}
+        className="bg-[#121418] border border-[#24272C] rounded-xl w-full max-w-5xl max-h-[90vh] flex flex-col shadow-2xl overflow-hidden outline-none"
+      >
         {/* Modal Header */}
         <div className="p-4 bg-[#181B20] border-b border-[#24272C] flex items-center justify-between">
           <div className="flex items-center gap-2.5">
@@ -98,7 +117,7 @@ export const SwarmDebugModal: React.FC<SwarmDebugModalProps> = ({
               <Bug className="w-5 h-5" />
             </div>
             <div>
-              <h2 className="text-sm font-bold font-mono text-white flex items-center gap-2">
+              <h2 id="swarm-debug-title" className="text-sm font-bold font-mono text-white flex items-center gap-2">
                 <span>Depurador & Validador de Schema API</span>
                 <span className="text-[10px] px-2 py-0.5 rounded bg-emerald-950 text-emerald-400 border border-emerald-800">
                   /api/swarm/analyze
@@ -112,6 +131,7 @@ export const SwarmDebugModal: React.FC<SwarmDebugModalProps> = ({
 
           <button
             onClick={onClose}
+            aria-label="Fechar depurador"
             className="p-1.5 rounded-lg text-[#9CA3AF] hover:text-white hover:bg-[#24272C] transition-all"
           >
             <X className="w-5 h-5" />

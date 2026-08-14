@@ -38,79 +38,7 @@ export const AgentStatusControlPanel: React.FC<AgentStatusControlPanelProps> = (
   const [testingAgentId, setTestingAgentId] = useState<string | null>(null);
   const [customLatencies, setCustomLatencies] = useState<Record<string, number>>({});
 
-  // Specialist Agents Preset Data if empty
-  const defaultAgents: AgentReport[] = [
-    {
-      agentId: 'technical',
-      agentName: 'Dr. Quant Graph',
-      agentRole: 'Análise Técnica & Gráficos',
-      specialistType: 'Técnico',
-      avatarIcon: 'TrendingUp',
-      opinion: 'COMPRAR',
-      score: 84,
-      summary: `RSI em 58.4 com inclinação de alta. Preço acima da EMA20 e suporte técnico estruturado.`,
-      keyMetrics: [
-        { label: 'RSI (14)', value: '58.4', status: 'positive' },
-        { label: 'EMA (20)', value: 'Suporte Ativo', status: 'positive' },
-      ],
-      signals: ['Cruzamento de Médias Móveis 5m', 'Volume superior à média móvel de 20 períodos'],
-      processingTimeMs: 142,
-      status: 'CONCLUÍDO',
-    },
-    {
-      agentId: 'sentiment',
-      agentName: 'Sofia Sentiment',
-      agentRole: 'Notícias & Redes Sociais',
-      specialistType: 'Analista de Sentimento',
-      avatarIcon: 'MessageSquare',
-      opinion: 'COMPRAR',
-      score: 76,
-      summary: `Discussões no Reddit (r/CryptoCurrency) registram tom otimista sobre ${assetSymbol}.`,
-      keyMetrics: [
-        { label: 'Sentimento Reddit', value: '74% Positivo', status: 'positive' },
-        { label: 'Fear & Greed Index', value: '68 (Ganância)', status: 'positive' },
-      ],
-      signals: ['Pico de engajamento social', 'Ausência de notícias FUD relevantes'],
-      processingTimeMs: 215,
-      status: 'CONCLUÍDO',
-    },
-    {
-      agentId: 'whales',
-      agentName: 'Whale Tracker Apex',
-      agentRole: 'Rastreio de Carteiras & Liquidez',
-      specialistType: 'Fundamentalista',
-      avatarIcon: 'ShieldAlert',
-      opinion: 'COMPRAR',
-      score: 88,
-      summary: `Detectados 14 blocos de acumulação on-chain >$500k nas últimas 2 horas.`,
-      keyMetrics: [
-        { label: 'Fluxo Corretoras', value: '-$28.5M Saída', status: 'positive' },
-        { label: 'Blocos On-Chain', value: '14 Ordens VIP', status: 'positive' },
-      ],
-      signals: ['Transferência de corretoras para cold wallets', 'Paredão de suporte em -0.8% no Order Book'],
-      processingTimeMs: 178,
-      status: 'CONCLUÍDO',
-    },
-    {
-      agentId: 'alpha',
-      agentName: 'Alpha Zoo Engine',
-      agentRole: 'Fatores Quantitativos & Math Model',
-      specialistType: 'Quant Factor',
-      avatarIcon: 'Cpu',
-      opinion: 'COMPRAR',
-      score: 81,
-      summary: `Fatores GTJA-191 e Alpha_001 em 5m indicam expectativa matemática positiva (+1.8% IC).`,
-      keyMetrics: [
-        { label: 'Win Rate GTJA', value: '66.8%', status: 'positive' },
-        { label: 'Sharpe Ratio', value: '2.18 Est.', status: 'positive' },
-      ],
-      signals: ['Disparo no Fator Momentum Volatilidade', 'Backtest de 30 dias com histórico consistente'],
-      processingTimeMs: 188,
-      status: 'CONCLUÍDO',
-    },
-  ];
-
-  const activeAgents = agents.length > 0 ? agents : defaultAgents;
+  const activeAgents = agents;
 
   const handleTestPing = (agentId: string) => {
     setTestingAgentId(agentId);
@@ -138,9 +66,9 @@ export const AgentStatusControlPanel: React.FC<AgentStatusControlPanelProps> = (
     return true;
   });
 
-  const avgLatency = Math.round(
-    activeAgents.reduce((acc, a) => acc + getAgentLatency(a), 0) / activeAgents.length
-  );
+  const avgLatency = activeAgents.length > 0
+    ? Math.round(activeAgents.reduce((acc, a) => acc + getAgentLatency(a), 0) / activeAgents.length)
+    : 0;
 
   const renderIcon = (iconName: string, specType?: string) => {
     if (specType === 'Fundamentalista' || iconName === 'ShieldAlert') {
@@ -188,15 +116,17 @@ export const AgentStatusControlPanel: React.FC<AgentStatusControlPanelProps> = (
         {/* Aggregate Stats Badges */}
         <div className="flex flex-wrap items-center gap-2 text-[10px]">
           <div className="bg-[#0A0B0D] px-2.5 py-1 rounded border border-[#24272C] flex items-center gap-1.5">
-            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping"></span>
+            <span className={`w-1.5 h-1.5 rounded-full ${activeAgents.length > 0 ? 'bg-emerald-400 animate-ping' : 'bg-rose-500'}`}></span>
             <span className="text-[#9CA3AF]">Status:</span>
-            <span className="text-emerald-400 font-bold">4/4 ATIVOS</span>
+            <span className={`font-bold ${activeAgents.length > 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+              {activeAgents.length > 0 ? `${activeAgents.length}/${activeAgents.length} ATIVOS` : '0/4 OFFLINE'}
+            </span>
           </div>
 
           <div className="bg-[#0A0B0D] px-2.5 py-1 rounded border border-[#24272C] flex items-center gap-1.5">
             <Clock className="w-3 h-3 text-cyan-400" />
             <span className="text-[#9CA3AF]">Latência Média:</span>
-            <span className="text-cyan-400 font-bold">{avgLatency}ms</span>
+            <span className="text-cyan-400 font-bold">{activeAgents.length > 0 ? `${avgLatency}ms` : '—'}</span>
           </div>
 
           {onRefreshAgentStatus && (
@@ -243,7 +173,26 @@ export const AgentStatusControlPanel: React.FC<AgentStatusControlPanelProps> = (
       </div>
 
       {/* Specialist Agents Cards Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+      {activeAgents.length === 0 ? (
+        <div className="bg-[#0A0B0D] border border-rose-500/30 rounded-lg p-4 flex items-start gap-3">
+          <div className="p-2 rounded bg-rose-500/10 border border-rose-500/30 shrink-0">
+            <ShieldAlert className="w-4 h-4 text-rose-400" />
+          </div>
+          <div className="space-y-1">
+            <div className="flex items-center gap-2">
+              <h4 className="text-xs font-bold text-rose-400 uppercase tracking-wider">Sem dados reais dos agentes</h4>
+              <span className="text-[9px] px-1.5 py-0.5 rounded bg-rose-500/10 text-rose-400 border border-rose-500/30 font-bold uppercase">
+                Offline
+              </span>
+            </div>
+            <p className="text-[11px] text-[#9CA3AF] leading-relaxed">
+              Nenhum relatório de IA foi recebido para <span className="text-white font-bold">{assetSymbol}</span>.
+              Execute o comitê Swarm (Ping Swarm) para consultar os agentes especialistas. Nenhum dado de exemplo é exibido.
+            </p>
+          </div>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
         {filteredAgents.map((agent, idx) => {
           const latency = getAgentLatency(agent);
           const specTitle =
@@ -402,7 +351,8 @@ export const AgentStatusControlPanel: React.FC<AgentStatusControlPanelProps> = (
             </div>
           );
         })}
-      </div>
+        </div>
+      )}
     </div>
   );
 };

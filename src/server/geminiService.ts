@@ -23,6 +23,20 @@ import {
 
 type EngineSource = 'gemini' | 'deepseek' | 'hybrid' | 'fallback';
 
+// Cadeia de modelos Gemini vigentes: se o primário for descontinuado pelo Google
+// (ex.: gemini-2.5-flash "no longer available to new users"), o comitê tenta o
+// próximo automaticamente em vez de degradar todos os agentes Gemini.
+// Sobrescrevível por GEMINI_MODEL, aceitando uma lista separada por vírgula.
+const DEFAULT_GEMINI_MODELS = ['gemini-3.5-flash', 'gemini-3.1-flash-lite', 'gemini-3.7-flash'];
+
+function getGeminiModels(): string[] {
+  const fromEnv = (process.env.GEMINI_MODEL || '')
+    .split(',')
+    .map((m) => m.trim())
+    .filter(Boolean);
+  return fromEnv.length ? fromEnv : DEFAULT_GEMINI_MODELS;
+}
+
 // Extrai um resumo curto do motivo de falha de um provedor para o agente degradado.
 function shortReason(reason: unknown): string | undefined {
   if (reason instanceof Error) return reason.message;
@@ -226,51 +240,73 @@ const COMMITTEE_RESPONSE_SCHEMA = {
 };
 
 async function callGeminiWithRetry(clients: GoogleGenAI[], prompt: string, schema: any, retries = 2): Promise<any> {
-  for (let attempt = 1; attempt <= retries; attempt++) {
-    // Rotaciona a chave a cada tentativa: primária primeiro, backup nas próximas.
-    const client = clients[(attempt - 1) % clients.length];
-    try {
-      // 30.0 second timeout to accommodate structured JSON generation under normal load
-      const timeoutPromise = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error('Gemini API request timed out')), 30000)
-      );
+  const models = getGeminiModels();
+  const modelErrors: string[] = [];
 
-      const apiPromise = client.models.generateContent({
-        model: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
-        contents: prompt,
-        config: {
-          temperature: 0.2,
-          maxOutputTokens: 1024,
-          responseMimeType: 'application/json',
-          responseSchema: schema,
-        },
-      });
+  for (const model of models) {
+    for (let attempt = 1; attempt <= retries; attempt++) {
+      // Rotaciona a chave a cada tentativa: primária primeiro, backup nas próximas.
+      const client = clients[(attempt - 1) % clients.length];
+      try {
+        // 30.0 second timeout to accommodate structured JSON generation under normal load
+        const timeoutPromise = new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('Gemini API request timed out')), 30000)
+        );
 
-      const response = (await Promise.race([apiPromise, timeoutPromise])) as any;
+        const apiPromise = client.models.generateContent({
+          model,
+          contents: prompt,
+          config: {
+            temperature: 0.2,
+            maxOutputTokens: 1024,
+            responseMimeType: 'application/json',
+            responseSchema: schema,
+          },
+        });
 
-      if (response && response.text) {
-        return cleanAndParseJson(response.text);
+        const response = (await Promise.race([apiPromise, timeoutPromise])) as any;
+
+        if (response && response.text) {
+          return cleanAndParseJson(response.text);
+        }
+      } catch (err: any) {
+        const errMsg = err?.message || String(err);
+        const isDeprecated =
+          errMsg.includes('no longer available') ||
+          errMsg.includes('NOT_FOUND') ||
+          errMsg.includes('404') ||
+          errMsg.includes('deprecated') ||
+          (errMsg.includes('models/') && errMsg.includes('not found'));
+
+        if (isDeprecated) {
+          // Modelo descontinuado pelo provedor → tenta o próximo da cadeia na hora.
+          modelErrors.push(`${model}: ${errMsg.split('\n')[0].slice(0, 140)}`);
+          break;
+        }
+
+        const isTransient =
+          errMsg.includes('503') ||
+          errMsg.includes('high demand') ||
+          errMsg.includes('UNAVAILABLE') ||
+          errMsg.includes('resource exhausted') ||
+          errMsg.includes('429') ||
+          errMsg.includes('timeout') ||
+          errMsg.includes('timed out');
+
+        if (attempt < retries) {
+          // Falha em qualquer chave → tenta a próxima. Backoff apenas em erro transitório.
+          if (isTransient) await new Promise((res) => setTimeout(res, 300 * attempt));
+          continue;
+        }
+        // Tentativas esgotadas neste modelo → passa para o próximo da cadeia.
+        modelErrors.push(`${model}: ${errMsg.split('\n')[0].slice(0, 140)}`);
+        break;
       }
-    } catch (err: any) {
-      const errMsg = err?.message || String(err);
-      const isTransient =
-        errMsg.includes('503') ||
-        errMsg.includes('high demand') ||
-        errMsg.includes('UNAVAILABLE') ||
-        errMsg.includes('resource exhausted') ||
-        errMsg.includes('429') ||
-        errMsg.includes('timeout') ||
-        errMsg.includes('timed out');
-
-      if (attempt < retries) {
-        // Falha em qualquer chave → tenta a próxima. Backoff apenas em erro transitório.
-        if (isTransient) await new Promise((res) => setTimeout(res, 300 * attempt));
-        continue;
-      }
-      throw err;
     }
   }
-  throw new Error('Gemini response was empty or timed out');
+
+  const detail = modelErrors.length ? ` — ${modelErrors.join(' | ')}` : '';
+  throw new Error(`Gemini não retornou resposta válida para nenhum modelo da cadeia.${detail}`);
 }
 
 // CONSOLIDADOR DETERMINÍSTICO -------------------------------------------------
