@@ -53,4 +53,9 @@ describe('bitcoinWhaleService - agregação', () => {
   it('retorna null com lista vazia (nenhum número fabricado)', () => {
     expect(aggregateBitcoinWhale([], 60_000, 3, 962002)).toBeNull();
   });
+
+  it('registra a cobertura real (txsScanned) quando informada', () => {
+    const ov = aggregateBitcoinWhale(moves, 60_000, 3, 962002, 120);
+    expect(ov!.stats.txsScanned).toBe(120);
+  });
 });

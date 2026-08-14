@@ -149,7 +149,7 @@ async function buildRealDiagnostics(now: number): Promise<AgentDiagnostic[]> {
     probeWithDeadline(() => fetchRealDepth('BTC')),
     probeWithDeadline(() => getWhaleOverview(), 6000),
     probeWithDeadline(() => checkSemanticaHealth()),
-    probeWithDeadline(() => getBitcoinWhaleOverview(), 2000),
+    probeWithDeadline(() => getBitcoinWhaleOverview(), 6000),
     probeWithDeadline(() => getDefiLlamaFlows(), 2000),
   ]);
 
@@ -351,14 +351,18 @@ async function buildRealDiagnostics(now: number): Promise<AgentDiagnostic[]> {
       id: 'semantica_kg' as const,
       name: 'Semantica Knowledge Graph (Memória de Longo Prazo)',
       type: 'connector' as const,
-      status: semanticaHealthy ? ('ONLINE' as const) : ('DEGRADED' as const),
+      status: !semanticaEnabled
+        ? ('DISABLED' as const)
+        : semanticaHealthy
+        ? ('ONLINE' as const)
+        : ('DEGRADED' as const),
       latencyMs: semanticaLatency,
       lastChecked: now,
       details: semanticaEnabled
         ? (semanticaHealthy
             ? `Sidecar respondendo em ${semanticaLatency}ms (${semanticaDecisionCount} decisões no grafo).`
             : 'Sidecar inacessível — decisões serão perdidas (degradação graciosa).')
-        : 'SEMANTICA_BASE_URL não configurado — memória de longo prazo desativada.',
+        : 'SEMANTICA_BASE_URL não configurado — memória de longo prazo desativada (recurso opcional).',
     },
   ];
 }
@@ -402,6 +406,7 @@ app.get("/api/health", async (req, res) => {
   }
 
   const activeCount = diagnostics.filter(d => d.status === 'ONLINE').length;
+  const enabledCount = diagnostics.filter(d => d.status !== 'DISABLED').length;
 
   res.json({
     success: true,
@@ -410,7 +415,7 @@ app.get("/api/health", async (req, res) => {
       timestamp: now,
       latencyMs: Math.max(...diagnostics.map(d => d.latencyMs)),
       activeAgentsCount: activeCount,
-      totalAgentsCount: diagnostics.length,
+      totalAgentsCount: enabledCount,
       diagnostics,
       warningMessage,
     }

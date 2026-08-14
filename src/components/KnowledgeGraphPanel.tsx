@@ -126,6 +126,7 @@ export const KnowledgeGraphPanel: React.FC<KnowledgeGraphPanelProps> = ({ active
   };
 
   const disabled = !status?.enabled;
+  const healthy = !!status?.enabled && status?.health?.healthy !== false;
 
   return (
     <div className="space-y-4">
@@ -151,10 +152,15 @@ export const KnowledgeGraphPanel: React.FC<KnowledgeGraphPanelProps> = ({ active
               <WifiOff className="w-3 h-3" />
               Semantica KG: indisponível
             </span>
-          ) : (
+          ) : healthy ? (
             <span className="flex items-center gap-1.5 text-[10px] font-mono px-2.5 py-1 rounded border border-emerald-500/30 bg-emerald-500/10 text-emerald-400 uppercase">
               <Wifi className="w-3 h-3" />
               Semantica KG: ativo
+            </span>
+          ) : (
+            <span className="flex items-center gap-1.5 text-[10px] font-mono px-2.5 py-1 rounded border border-rose-500/30 bg-rose-500/10 text-rose-400 uppercase">
+              <WifiOff className="w-3 h-3" />
+              Semantica KG: inacessível
             </span>
           )}
           <button
@@ -201,6 +207,17 @@ export const KnowledgeGraphPanel: React.FC<KnowledgeGraphPanelProps> = ({ active
           </p>
           <p className="text-[11px] font-mono text-[#6B7280]">
             O app continua 100% funcional sem o sidecar (degradação graciosa).
+          </p>
+        </div>
+      ) : !healthy ? (
+        <div className="bg-[#121417] border border-rose-500/30 rounded-lg p-6 text-center space-y-2">
+          <Server className="w-8 h-8 text-rose-400/60 mx-auto" />
+          <p className="text-xs font-mono text-rose-400">
+            Sidecar do Knowledge Graph inacessível.
+          </p>
+          <p className="text-[11px] font-mono text-[#6B7280]">
+            O serviço Semantica está configurado, mas não respondeu ao health check.
+            Decisões do comitê não estão sendo persistidas na memória de longo prazo.
           </p>
         </div>
       ) : (

@@ -206,7 +206,7 @@ export interface AgentDiagnostic {
   id: AgentComponentId;
   name: string;
   type: 'connector' | 'agent';
-  status: 'ONLINE' | 'DEGRADED' | 'DISCONNECTED';
+  status: 'ONLINE' | 'DEGRADED' | 'DISCONNECTED' | 'DISABLED';
   latencyMs: number;
   lastChecked: number;
   details: string;
@@ -290,6 +290,7 @@ export interface BitcoinWhaleOverview {
     totalMovedBtc: number;
     totalMovedUsd: number | null;
     uniqueRecipients: number;
+    txsScanned?: number;
   };
   moves: BitcoinWhaleMove[];
   source: string; // e.g. "Mempool.space"

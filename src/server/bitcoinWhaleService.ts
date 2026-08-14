@@ -1,10 +1,10 @@
 import { BitcoinWhaleMove, BitcoinWhaleOverview } from '../types.js';
 
 const MEMPOOL_BASE = 'https://mempool.space/api';
-const CACHE_TTL_MS = 60 * 1000;
+const CACHE_TTL_MS = 3 * 60 * 1000;
 const WHALE_BTC_THRESHOLD = 10; // saídas >= 10 BTC contam como movimento de baleia
 const SCAN_BLOCKS = 3;
-const MAX_TXS_PER_BLOCK = 400; // amostra honesta: primeiras 400 txs de cada bloco
+const MAX_TXS_PER_BLOCK = 100; // amostra honesta: primeiras 100 txs de cada bloco (4 páginas)
 const TXS_PER_PAGE = 25; // paginação do endpoint /txs/:index
 const MAX_PAGES_PER_BLOCK = Math.ceil(MAX_TXS_PER_BLOCK / TXS_PER_PAGE);
 const USER_AGENT = 'vibe-trading-crypto-swarm/1.0';
@@ -36,6 +36,18 @@ async function fetchJson<T>(url: string, timeoutMs = 5000): Promise<T | null> {
       signal: controller.signal,
     });
     clearTimeout(timeout);
+    if (res.status === 429 || res.status === 503) {
+      const retryAfterMs = Math.min(Number(res.headers.get('retry-after') || '1') * 1000, 1000);
+      await new Promise((r) => setTimeout(r, retryAfterMs));
+      const res2 = await fetch(url, {
+        headers: { 'Accept': 'application/json', 'User-Agent': USER_AGENT },
+      });
+      if (!res2.ok) {
+        console.warn(`[btc-whale] HTTP ${res2.status} ${res2.statusText} em ${url} (após retry)`);
+        return null;
+      }
+      return (await res2.json()) as T;
+    }
     if (!res.ok) {
       console.warn(`[btc-whale] HTTP ${res.status} ${res.statusText} em ${url}`);
       return null;
@@ -95,11 +107,13 @@ export function filterWhaleMoves(txs: MempoolTx[], thresholdBtc: number, blockHe
 }
 
 // Puro e testável: agrega as movimentações em um overview de baleias BTC.
+// Retorna null apenas quando a lista de movimentos está vazia (nenhum número fabricado).
 export function aggregateBitcoinWhale(
   moves: BitcoinWhaleMove[],
   priceUsd: number | null,
   blocksScanned: number,
-  latestBlockHeight: number
+  latestBlockHeight: number,
+  txsScanned?: number
 ): BitcoinWhaleOverview | null {
   if (moves.length === 0) return null;
 
@@ -115,6 +129,7 @@ export function aggregateBitcoinWhale(
       totalMovedBtc: round2(totalBtc),
       totalMovedUsd: priceUsd ? round2(totalBtc * priceUsd) : null,
       uniqueRecipients: recipients.size,
+      ...(txsScanned !== undefined ? { txsScanned } : {}),
     },
     moves: sorted.slice(0, 12).map((m) => ({ ...m, amountUsd: priceUsd ? round2(m.amountBtc * priceUsd) : null })),
     source: 'Mempool.space',
@@ -138,41 +153,81 @@ async function fetchBlockTxSample(blockId: string, txCount: number): Promise<Mem
   return results.filter((r): r is MempoolTx[] => r !== null).flat();
 }
 
+// Puro e testável: extrai movimentos-baleia de uma lista de txs e conta cobertura.
+function extractMovesAndCoverage(
+  samples: MempoolTx[][],
+  blocks: MempoolBlock[],
+  priceUsd: number | null
+): { moves: BitcoinWhaleMove[]; txsScanned: number } {
+  const moves: BitcoinWhaleMove[] = [];
+  let txsScanned = 0;
+  blocks.forEach((b, i) => {
+    const blockTxs = samples[i] ?? [];
+    txsScanned += blockTxs.length;
+    moves.push(...filterWhaleMoves(blockTxs, WHALE_BTC_THRESHOLD, b.height));
+  });
+  return { moves, txsScanned };
+}
+
 async function fetchMempoolWhaleOverview(): Promise<BitcoinWhaleOverview | null> {
   const blocks = await fetchJson<MempoolBlock[]>(`${MEMPOOL_BASE}/blocks`, 6000);
   if (!blocks || blocks.length === 0) return null;
 
   const selected = blocks.slice(0, SCAN_BLOCKS);
-  const priceUsd = await getBtcPriceUsd();
 
-  const blockTxSamples = await Promise.all(
-    selected.map((b) => fetchBlockTxSample(b.id, b.tx_count))
-  );
+  // Preço em paralelo com as páginas — a falha do preço não segura o fetch nem fabrica nada.
+  const [priceUsd, blockTxSamples] = await Promise.all([
+    getBtcPriceUsd(),
+    Promise.all(selected.map((b) => fetchBlockTxSample(b.id, b.tx_count))),
+  ]);
 
-  const moves: BitcoinWhaleMove[] = [];
-  selected.forEach((b, i) => {
-    moves.push(...filterWhaleMoves(blockTxSamples[i] ?? [], WHALE_BTC_THRESHOLD, b.height));
-  });
+  const { moves, txsScanned } = extractMovesAndCoverage(blockTxSamples, selected, priceUsd);
 
-  return aggregateBitcoinWhale(moves, priceUsd, selected.length, selected[0].height);
+  // Fonte respondeu (blocos + páginas), mas nenhuma saída ≥ 10 BTC na amostra:
+  // é atividade nula, NÃO fonte indisponível. Retorna overview com 0 movimentos.
+  const aggregated = aggregateBitcoinWhale(moves, priceUsd, selected.length, selected[0].height, txsScanned);
+  if (aggregated) return aggregated;
+
+  return {
+    stats: {
+      blocksScanned: selected.length,
+      latestBlockHeight: selected[0].height,
+      whaleMoves: 0,
+      totalMovedBtc: 0,
+      totalMovedUsd: 0,
+      uniqueRecipients: 0,
+      txsScanned,
+    },
+    moves: [],
+    source: 'Mempool.space',
+    scope: `Bitcoin on-chain — saídas ≥ ${WHALE_BTC_THRESHOLD} BTC (amostra das primeiras ${MAX_TXS_PER_BLOCK} txs dos últimos ${SCAN_BLOCKS} blocos; fonte respondendo, 0 movimentos na amostra)`,
+    fetchedAt: Date.now(),
+  };
 }
 
 let btcCache: { data: BitcoinWhaleOverview | null; fetchedAt: number } = { data: null, fetchedAt: 0 };
+let btcFetchInFlight: Promise<BitcoinWhaleOverview | null> | null = null;
 
 /**
  * Movimentos de baleias no Bitcoin via Mempool.space (sem chave).
- * Retorna null quando a fonte está indisponível — nenhum número é fabricado.
+ * Deduplica fetches concorrentes (probe do health + painel) e usa stale-while-revalidate:
+ * retorna cache expirado quando o refresh falha, nunca fabrica números.
  */
 export async function getBitcoinWhaleOverview(): Promise<BitcoinWhaleOverview | null> {
   const now = Date.now();
   if (btcCache.data && now - btcCache.fetchedAt < CACHE_TTL_MS) {
     return btcCache.data;
   }
-
-  const fresh = await fetchMempoolWhaleOverview();
-  if (fresh) {
-    btcCache = { data: fresh, fetchedAt: now };
-    return fresh;
-  }
-  return btcCache.data;
+  if (btcFetchInFlight) return btcFetchInFlight;
+  btcFetchInFlight = fetchMempoolWhaleOverview()
+    .then((fresh) => {
+      if (fresh) {
+        btcCache = { data: fresh, fetchedAt: Date.now() };
+      }
+      return fresh;
+    })
+    .finally(() => {
+      btcFetchInFlight = null;
+    });
+  return btcFetchInFlight;
 }
