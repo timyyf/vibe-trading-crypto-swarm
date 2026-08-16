@@ -36,7 +36,7 @@ export async function runGroqAgents(params: RunGroqAgentsParams): Promise<AgentR
   const present = new Set(agents.map((a) => a.agentId));
   for (const id of params.agentIds) {
     if (!present.has(id)) {
-      agents.push(degradedAgent(id, 'groq'));
+      agents.push(degradedAgent(id, 'groq', 'agente omitido na resposta do provedor'));
     }
   }
 

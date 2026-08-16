@@ -305,7 +305,7 @@ export function normalizeAgents(rawAgents: any, provider: 'groq' | 'deepseek' | 
 export function degradedAgent(id: AgentAgentId, provider: 'groq' | 'deepseek' | 'gemini', reason?: string): AgentReport {
   const meta = AGENT_META[id];
   const providerLabel = provider === 'groq' ? 'Groq' : provider === 'gemini' ? 'Gemini' : 'DeepSeek';
-  const reasonText = reason ? ` ${reason}.` : ` provedor ${providerLabel} não respondeu no prazo.`;
+  const reasonText = reason ? ` ${reason}.` : ` provedor ${providerLabel} falhou sem motivo informado.`;
   return {
     agentId: id,
     agentName: meta.agentName,

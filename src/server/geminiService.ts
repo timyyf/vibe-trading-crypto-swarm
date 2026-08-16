@@ -246,7 +246,7 @@ async function runGeminiAgents(params: CommitteeMarketInput & { agentIds: typeof
   // Garante cobertura completa dos agentes solicitados (LLM pode omitir algum).
   const present = new Set(agents.map((a) => a.agentId));
   for (const id of params.agentIds) {
-    if (!present.has(id)) agents.push(degradedAgent(id, 'gemini'));
+    if (!present.has(id)) agents.push(degradedAgent(id, 'gemini', 'agente omitido na resposta do provedor'));
   }
 
   return agents;

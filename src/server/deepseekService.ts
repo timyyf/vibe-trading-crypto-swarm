@@ -44,7 +44,7 @@ export async function runDeepSeekAgents(params: RunDeepSeekAgentsParams): Promis
 }
 
 function degradedDeepSeekAgent(id: AgentAgentId): AgentReport {
-  return degradedAgent(id, 'deepseek');
+  return degradedAgent(id, 'deepseek', 'agente omitido na resposta do provedor');
 }
 
 // Chamada OpenAI-compatível com timeout de 20s + retry em erros transitórios.
