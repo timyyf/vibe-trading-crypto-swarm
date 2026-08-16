@@ -1,8 +1,8 @@
 # Vibe Trading // Swarm AI 🚀
 
-Plataforma institucional de análise quantitativa e inteligência financeira multi-agente alimentada por Google Gemini.
+Plataforma institucional de análise quantitativa e inteligência financeira multi-agente alimentada por Groq + DeepSeek.
 
-![Vibe Trading Swarm AI](https://img.shields.io/badge/Status-Active-emerald?style=for-the-badge) ![TypeScript](https://img.shields.io/badge/TypeScript-007ACC?style=for-the-badge&logo=typescript&logoColor=white) ![React](https://img.shields.io/badge/React_19-20232A?style=for-the-badge&logo=react&logoColor=61DAFB) ![Express](https://img.shields.io/badge/Express-000000?style=for-the-badge&logo=express&logoColor=white) ![Gemini 2.5](https://img.shields.io/badge/Gemini_2.5-8E75FF?style=for-the-badge&logo=google&logoColor=white)
+![Vibe Trading Swarm AI](https://img.shields.io/badge/Status-Active-emerald?style=for-the-badge) ![TypeScript](https://img.shields.io/badge/TypeScript-007ACC?style=for-the-badge&logo=typescript&logoColor=white) ![React](https://img.shields.io/badge/React_19-20232A?style=for-the-badge&logo=react&logoColor=61DAFB) ![Express](https://img.shields.io/badge/Express-000000?style=for-the-badge&logo=express&logoColor=white) ![Groq](https://img.shields.io/badge/Groq-F55036?style=for-the-badge&logo=groq&logoColor=white)
 
 ---
 
@@ -87,7 +87,7 @@ O **Vibe Trading Swarm AI** é um sistema avançado de tomada de decisão para c
 - 📓 **Diário de Trades (Trade Journal)**:
   - Registro de simulações e execuções para acompanhamento de performance.
 - ⚙️ **Painel Diagnóstico & Debug Swarm**:
-  - Testes de ping individual por agente e logs de execução com altíssima velocidade (< 200ms por veredito via modelo quântico fallback + Gemini API).
+  - Testes de ping individual por agente e logs de execução com altíssima velocidade (< 200ms por veredito via Groq/DeepSeek + fallback determinístico).
 
 ---
 
@@ -95,7 +95,7 @@ O **Vibe Trading Swarm AI** é um sistema avançado de tomada de decisão para c
 
 - **Frontend**: React 19, Tailwind CSS, Lucide Icons, Recharts, Motion (Framer Motion).
 - **Backend**: Node.js, Express, ESBuild, TypeScript (tsx).
-- **IA Engine**: `@google/genai` (Google Gemini API).
+- **IA Engine**: Comitê híbrido `Groq` (gpt-oss-120b/Llama) + `DeepSeek` em paralelo, com Gemini como fallback terciário. Clientes OpenAI-compatíveis via `fetch`.
 - **Build System**: Vite 6, ESBuild.
 
 ---
@@ -104,7 +104,7 @@ O **Vibe Trading Swarm AI** é um sistema avançado de tomada de decisão para c
 
 ### Pré-requisitos
 - Node.js 18+ instalado.
-- Chave de API do Gemini (`GEMINI_API_KEY`).
+- Chaves de API: `GROQ_API_KEY` (gratuita, console.groq.com) e `DEEPSEEK_API_KEY`. Gemini opcional (fallback terciário).
 
 ### Instalação
 
@@ -118,7 +118,7 @@ npm install
 
 # Configure as variáveis de ambiente
 cp .env.example .env
-# Adicione sua GEMINI_API_KEY no arquivo .env
+# Adicione GROQ_API_KEY e DEEPSEEK_API_KEY no arquivo .env
 ```
 
 ### Executando em Desenvolvimento
@@ -140,16 +140,18 @@ O app é uma SPA + Express em **Netlify Functions** (`netlify.toml` + `netlify/f
 1. **New site** → importar do GitHub (`timyyf/vibe-trading-crypto-swarm`).
    - Build command `npm run build` e publish `dist` já vêm do `netlify.toml`.
 2. **Site configuration → Functions → Function timeout**: alterar para **26s**
-   (o `/api/swarm/analyze` com Gemini pode levar até ~18s + cold start; sem chave
+   (o `/api/swarm/analyze` híbrido Groq+DeepSeek leva ~2-13s + cold start; sem chave
    o fallback local responde em ~1.3s).
 3. **Environment variables**:
    | Variável | Obrigatória? | Descrição |
    |---|---|---|
-   | `GEMINI_API_KEY` | opcional | Chave do Gemini 2.5 Flash. Sem ela o comitê roda em fallback determinístico com dados reais. |
+   | `GROQ_API_KEY` | recomendada | Chave gratuita da Groq (console.groq.com). Cobre 3 especialistas no modo híbrido. |
+   | `DEEPSEEK_API_KEY` | recomendada | Chave DeepSeek. Cobre os outros 3 especialistas no modo híbrido. |
+   | `GEMINI_API_KEY` | opcional | Fallback terciário quando Groq/DeepSeek falham ou não estão configurados. |
    | `SEMANTICA_BASE_URL` | opcional | URL do sidecar Semantica no Render (ver seção acima). |
    | `SEMANTICA_ENABLED` | opcional | `true` para ativar o knowledge graph (default `true`). |
 4. **Deploy**. Verificar depois:
-   - `https://<site>.netlify.app/api/health` → `ONLINE`/`DEGRADED` com 9 agentes diagnosticados
+   - `https://<site>.netlify.app/api/health` → `ONLINE`/`DEGRADED` com 10 agentes diagnosticados
    - `https://<site>.netlify.app/api/knowledge/status` → `{"enabled": false}` sem sidecar
 
 ### Observações

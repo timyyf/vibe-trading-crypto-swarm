@@ -11,9 +11,11 @@ import { getWhaleOverview } from "./whaleDataService.js";
 import { computeWeightedVote } from "../lib/weightedVote.js";
 import { computeReview, runReplay, summarizeForPrompt } from "./mirofishService.js";
 import { runDeepSeekAgents } from "./deepseekService.js";
+import { runGroqAgents } from "./groqService.js";
 import {
   ALL_AGENT_IDS,
   DEEPSEEK_AGENT_IDS,
+  GROQ_AGENT_IDS,
   GEMINI_AGENT_IDS,
   buildCommitteePrompt,
   degradedAgent,
@@ -21,14 +23,16 @@ import {
   normalizeAgents,
 } from "./committeePrompt.js";
 
-type EngineSource = 'gemini' | 'deepseek' | 'hybrid' | 'fallback';
+type EngineSource = 'groq' | 'deepseek' | 'gemini' | 'hybrid' | 'fallback';
 
 // Cadeia de modelos Gemini vigentes: se o primário for descontinuado pelo Google
 // (ex.: gemini-2.5-flash "no longer available to new users"), o comitê tenta o
 // próximo automaticamente em vez de degradar todos os agentes Gemini.
 // Sobrescrevível por GEMINI_MODEL, aceitando uma lista separada por vírgula.
-const DEFAULT_GEMINI_MODELS = ['gemini-3.5-flash', 'gemini-3.1-flash-lite', 'gemini-3.7-flash'];
-
+// Ordem = velocidade observada (bench 2026-08-14): lite ~4-10s, 3.5-flash ~15s+,
+// 3.7-flash 503/high demand intermitente. O mais rápido primeiro evita estourar
+// o orçamento híbrido (HYBRID_BUDGET_MS) no modo comitê.
+const DEFAULT_GEMINI_MODELS = ['gemini-3.1-flash-lite', 'gemini-3.5-flash', 'gemini-3.7-flash'];
 function getGeminiModels(): string[] {
   const fromEnv = (process.env.GEMINI_MODEL || '')
     .split(',')
@@ -89,8 +93,10 @@ export async function analyzeCryptoWithSwarm(
 ): Promise<SwarmAnalysisResult> {
   const geminiKey = process.env.GEMINI_API_KEY || process.env.GEMINI_API_KEY_BACKUP;
   const deepseekKey = process.env.DEEPSEEK_API_KEY;
-  const hasGemini = !!geminiKey;
+  const groqKey = process.env.GROQ_API_KEY;
+  const hasGroq = !!groqKey;
   const hasDeepseek = !!deepseekKey;
+  const hasGemini = !!geminiKey;
 
   // Revisão MiroFish: a simulação é consultada como SUPORTE — o veredito final
   // permanece sempre do comitê. A confiança exibida é ponderada (0.7 comitê + 0.3 sim).
@@ -119,41 +125,83 @@ export async function analyzeCryptoWithSwarm(
     mirofishPromptSection: mirofishPromptSection || undefined,
   };
 
-  // 1) HÍBRIDO — ambas as chaves presentes: Gemini (3 especialistas) + DeepSeek (3) em PARALELO.
-  if (hasGemini && hasDeepseek) {
+  // Helper: tenta o Gemini como TERCEIRO provedor (fallback de IA antes do local).
+  const tryGeminiAsTertiary = async (): Promise<SwarmAnalysisResult | null> => {
+    if (!hasGemini) return null;
+    try {
+      const agents = await runGeminiAgents({ ...common, agentIds: ALL_AGENT_IDS });
+      // Se o Gemini "respondeu" mas todos os agentes vieram DEGRADADO (ex.: modelos
+      // da cadeia falharam e a cobertura devolveu vazios), não há inferência útil —
+      // trata como falha e deixa o fallback local determinístico responder.
+      const meaningful = agents.some((a) => a.status !== 'DEGRADADO');
+      if (!meaningful) {
+        console.log('[Gemini API] Notice: cadeia respondeu sem pareceres válidos. Usando fallback local.');
+        return null;
+      }
+      return finalizeWithMirofish(finalizeFromAgents(common, mergeAndOrderAgents(agents), 'gemini'));
+    } catch (err: any) {
+      console.log(`[Gemini API] Notice (${err?.message || 'Model Unavailable'}). Usando fallback local.`);
+      return null;
+    }
+  };
+
+  // 1) HÍBRIDO — Groq (3 especialistas) + DeepSeek (3) em PARALELO (padrão).
+  if (hasGroq && hasDeepseek) {
     // Orçamento global: a resposta nunca espera mais que HYBRID_BUDGET_MS pelos dois provedores.
     // O mais rápido responde na hora; o lento vira DEGRADADO com motivo honesto.
     const hybridBudgetMs = Number(process.env.HYBRID_BUDGET_MS) || 12000;
+    // DeepSeek respondeu em 34s no bench — muito acima do orçamento. Damos a ele
+    // apenas metade do orçamento híbrido para sobrar tempo ao Groq substituto
+    // responder dentro do prazo global (Groq responde em ~200ms).
+    const deepseekBudgetMs = Math.max(3000, Math.floor(hybridBudgetMs * 0.5));
+    const hybridStartedAt = Date.now();
     const [g, d] = await Promise.all([
-      settleWithBudget('Gemini', runGeminiAgents({ ...common, agentIds: GEMINI_AGENT_IDS }), hybridBudgetMs),
-      settleWithBudget('DeepSeek', runDeepSeekAgents({ ...common, agentIds: DEEPSEEK_AGENT_IDS }), hybridBudgetMs),
+      settleWithBudget('Groq', runGroqAgents({ ...common, agentIds: GROQ_AGENT_IDS }), hybridBudgetMs),
+      settleWithBudget('DeepSeek', runDeepSeekAgents({ ...common, agentIds: DEEPSEEK_AGENT_IDS }), deepseekBudgetMs),
     ]);
 
+    // DeepSeek falhou → Groq assume os especialistas dele (whales/alpha/risk) dentro do
+    // orçamento restante, para o comitê sair completo em vez de com 3 DEGRADADO.
+    if (g.status === 'fulfilled' && d.status === 'rejected') {
+      const remainingBudgetMs = Math.max(0, hybridBudgetMs - (Date.now() - hybridStartedAt));
+      const groqSubstitute = await settleWithBudget(
+        'Groq (substituto de DeepSeek)',
+        runGroqAgents({ ...common, agentIds: DEEPSEEK_AGENT_IDS }),
+        remainingBudgetMs
+      );
+      if (groqSubstitute.status === 'fulfilled') {
+        const agents = mergeAndOrderAgents([...g.value, ...groqSubstitute.value]);
+        return finalizeWithMirofish(finalizeFromAgents(common, agents, 'groq'));
+      }
+    }
+
     // Degradação honesta por lado: provedor que falhou mantém seus agentes com peso reduzido.
-    const geminiAgents = g.status === 'fulfilled'
+    const groqAgents = g.status === 'fulfilled'
       ? g.value
-      : GEMINI_AGENT_IDS.map((id) => degradedAgent(id, 'gemini', shortReason(g.reason)));
+      : GROQ_AGENT_IDS.map((id) => degradedAgent(id, 'groq', shortReason(g.reason)));
     const deepseekAgents = d.status === 'fulfilled'
       ? d.value
       : DEEPSEEK_AGENT_IDS.map((id) => degradedAgent(id, 'deepseek', shortReason(d.reason)));
 
     if (g.status === 'fulfilled' || d.status === 'fulfilled') {
-      const agents = mergeAndOrderAgents([...geminiAgents, ...deepseekAgents]);
+      const agents = mergeAndOrderAgents([...groqAgents, ...deepseekAgents]);
       return finalizeWithMirofish(finalizeFromAgents(common, agents, 'hybrid'));
     }
 
-    // Ambos falharam em paralelo → fallback local direto (evita re-tentativa em sequência).
+    // Ambos falharam em paralelo → Gemini como terceiro (evita re-tentativa em sequência).
+    const tertiary = await tryGeminiAsTertiary();
+    if (tertiary) return tertiary;
     const fallbackResult = await fallbackSwarmAnalysis(symbol, name, price, change24h, volume24h, high24h, low24h, signalDurationMinutes);
     return finalizeWithMirofish(fallbackResult);
   }
 
-  // 2) APENAS GEMINI (ou Gemini como substituto após falha híbrida).
-  if (hasGemini) {
+  // 2) APENAS GROQ (ou Groq como substituto após falha híbrida).
+  if (hasGroq) {
     try {
-      const agents = await runGeminiAgents({ ...common, agentIds: ALL_AGENT_IDS });
-      return finalizeWithMirofish(finalizeFromAgents(common, mergeAndOrderAgents(agents), 'gemini'));
+      const agents = await runGroqAgents({ ...common, agentIds: ALL_AGENT_IDS });
+      return finalizeWithMirofish(finalizeFromAgents(common, mergeAndOrderAgents(agents), 'groq'));
     } catch (err: any) {
-      console.log(`[Gemini API] Notice (${err?.message || 'Model Unavailable'}). Tentando próximo provedor.`);
+      console.log(`[Groq API] Notice (${err?.message || 'Model Unavailable'}). Tentando próximo provedor.`);
     }
   }
 
@@ -167,7 +215,11 @@ export async function analyzeCryptoWithSwarm(
     }
   }
 
-  // 4) FALLBACK LOCAL — engines determinísticos com dados reais.
+  // 4) GEMINI COMO TERCEIRO — usado quando Groq/DeepSeek não estão configurados ou falharam.
+  const tertiary = await tryGeminiAsTertiary();
+  if (tertiary) return tertiary;
+
+  // 5) FALLBACK LOCAL — engines determinísticos com dados reais.
   const fallbackResult = await fallbackSwarmAnalysis(symbol, name, price, change24h, volume24h, high24h, low24h, signalDurationMinutes);
   return finalizeWithMirofish(fallbackResult);
 }
@@ -248,9 +300,15 @@ async function callGeminiWithRetry(clients: GoogleGenAI[], prompt: string, schem
       // Rotaciona a chave a cada tentativa: primária primeiro, backup nas próximas.
       const client = clients[(attempt - 1) % clients.length];
       try {
-        // 30.0 second timeout to accommodate structured JSON generation under normal load
+        // Timeout interno limitado pelo orçamento híbrido (se definido): de nada
+        // adianta esperar 30s se o comitê só pode esperar 20s — o corte externo
+        // venceria e o modelo "lento mas ok" viraria DEGRADADO à toa.
+        // Usa 90% do orçamento para deixar margem ao próximo modelo da cadeia
+        // responder dentro do prazo global.
+        const hybridBudgetMs = Number(process.env.HYBRID_BUDGET_MS) || 12000;
+        const internalTimeoutMs = Math.min(30000, Math.max(5000, Math.floor(hybridBudgetMs * 0.9)));
         const timeoutPromise = new Promise((_, reject) =>
-          setTimeout(() => reject(new Error('Gemini API request timed out')), 30000)
+          setTimeout(() => reject(new Error('Gemini API request timed out')), internalTimeoutMs)
         );
 
         const apiPromise = client.models.generateContent({
@@ -258,7 +316,7 @@ async function callGeminiWithRetry(clients: GoogleGenAI[], prompt: string, schem
           contents: prompt,
           config: {
             temperature: 0.2,
-            maxOutputTokens: 1024,
+            maxOutputTokens: 4096,
             responseMimeType: 'application/json',
             responseSchema: schema,
           },
@@ -340,7 +398,7 @@ function finalizeFromAgents(common: CommitteeMarketInput, agents: AgentReport[],
     sellWeight: weightedVote.sellWeight,
   });
 
-  const providerLabel = engineSource === 'hybrid' ? 'Gemini + DeepSeek' : engineSource === 'deepseek' ? 'DeepSeek' : engineSource === 'gemini' ? 'Gemini' : 'Local';
+  const providerLabel = engineSource === 'hybrid' ? 'Groq + DeepSeek' : engineSource === 'deepseek' ? 'DeepSeek' : engineSource === 'groq' ? 'Groq' : engineSource === 'gemini' ? 'Gemini' : 'Local';
   const fmtWeight = (w: number) => (Number.isInteger(w) ? w.toString() : w.toFixed(1));
   const buyWeight = weightedVote.buyWeight;
   const sellWeight = weightedVote.sellWeight;

@@ -105,6 +105,7 @@ async function probeWithDeadline<T>(
 async function buildRealDiagnostics(now: number): Promise<AgentDiagnostic[]> {
   const hasGeminiKey = !!(process.env.GEMINI_API_KEY || process.env.GEMINI_API_KEY_BACKUP);
   const hasDeepseekKey = !!process.env.DEEPSEEK_API_KEY;
+  const hasGroqKey = !!process.env.GROQ_API_KEY;
   const semanticaEnabled = isSemanticaEnabled();
 
   // Sondas externas rodam em PARALELO, cada uma com deadline de 1.5s
@@ -113,8 +114,23 @@ async function buildRealDiagnostics(now: number): Promise<AgentDiagnostic[]> {
   // bitcoin_whales/defillama usam 2s e aquecem o cache em background;
   // market feed usa 6s: o ticker 24h da Binance devolve ~1.8MB e leva 4-7s,
   // um deadline de 1.5s gerava falso DEGRADED com o feed real funcionando).
-  const [feedRes, gemRes, deepseekRes, klinesRes, sentimentRes, depthRes, whaleFeedRes, semanticaRes, btcWhaleRes, defillamaRes] = await Promise.all([
+  const [feedRes, groqRes, gemRes, deepseekRes, klinesRes, sentimentRes, depthRes, whaleFeedRes, semanticaRes, btcWhaleRes, defillamaRes] = await Promise.all([
     probeWithDeadline(() => getTop100CryptoAssets(), 6000),
+    probeWithDeadline(async () => {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), PROBE_DEADLINE_MS);
+      try {
+        if (!process.env.GROQ_API_KEY) throw new Error('Groq key missing');
+        await fetch(`${process.env.GROQ_BASE_URL || 'https://api.groq.com/openai/v1'}/models`, {
+          headers: { 'Authorization': `Bearer ${process.env.GROQ_API_KEY}` },
+          signal: controller.signal,
+        });
+        clearTimeout(timer);
+      } catch {
+        clearTimeout(timer);
+        throw new Error('Groq endpoint unreachable');
+      }
+    }),
     probeWithDeadline(async () => {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), PROBE_DEADLINE_MS);
@@ -162,6 +178,13 @@ async function buildRealDiagnostics(now: number): Promise<AgentDiagnostic[]> {
   const gemStatus: AgentDiagnostic['status'] = !hasGeminiKey
     ? 'DEGRADED'
     : gemRes.ok
+    ? 'ONLINE'
+    : 'DEGRADED';
+
+  // Groq: chave presente + endpoint respondeu.
+  const groqStatus: AgentDiagnostic['status'] = !hasGroqKey
+    ? 'DEGRADED'
+    : groqRes.ok
     ? 'ONLINE'
     : 'DEGRADED';
 
@@ -236,6 +259,17 @@ async function buildRealDiagnostics(now: number): Promise<AgentDiagnostic[]> {
       latencyMs: feedRes.lat,
       lastChecked: now,
       details: feedDetails,
+    },
+    {
+      id: 'groq_llm' as const,
+      name: 'Inference Engine (Groq — Llama/gpt-oss)',
+      type: 'connector' as const,
+      status: groqStatus,
+      latencyMs: groqRes.lat,
+      lastChecked: now,
+      details: hasGroqKey
+        ? (groqStatus === 'ONLINE' ? 'Endpoint Groq respondendo. Chave API configurada.' : 'Endpoint Groq inacessível no momento.')
+        : 'Chave API ausente — comitê em modo fallback local determinístico (dados reais).',
     },
     {
       id: 'gemini_llm' as const,

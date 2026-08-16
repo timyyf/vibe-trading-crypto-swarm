@@ -566,7 +566,7 @@ export const SwarmMeetingRoom: React.FC<SwarmMeetingRoomProps> = ({
                 </h3>
               </div>
               <p className="text-xs text-[#9CA3AF] font-mono">
-                Sistemas alimentados pelo <span className="text-white font-bold">Gemini + DeepSeek</span>. Exibindo conclusões parciais dos agentes em tempo real para <span className="text-emerald-400 font-bold">{selectedAsset.symbol}/USDT</span> (${selectedAsset.price.toLocaleString()}).
+                Sistemas alimentados pelo <span className="text-white font-bold">Groq + DeepSeek</span> (Gemini como fallback). Exibindo conclusões parciais dos agentes em tempo real para <span className="text-emerald-400 font-bold">{selectedAsset.symbol}/USDT</span> (${selectedAsset.price.toLocaleString()}).
               </p>
             </div>
 
@@ -718,7 +718,11 @@ export const SwarmMeetingRoom: React.FC<SwarmMeetingRoomProps> = ({
                     <span>Swarm Consensus Engine</span>
                     {swarmResult.engineSource === 'hybrid' ? (
                       <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-violet-500/20 text-violet-300 border border-violet-500/40 font-bold">
-                        Híbrido · Gemini + DeepSeek
+                        Híbrido · Groq + DeepSeek
+                      </span>
+                    ) : swarmResult.engineSource === 'groq' ? (
+                      <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-violet-500/20 text-violet-300 border border-violet-500/40 font-bold">
+                        Groq API
                       </span>
                     ) : swarmResult.engineSource === 'gemini' ? (
                       <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-violet-500/20 text-violet-300 border border-violet-500/40 font-bold">
@@ -1165,14 +1169,16 @@ export const SwarmMeetingRoom: React.FC<SwarmMeetingRoomProps> = ({
                       {agent.provider && (
                         <span
                           className={`text-[8px] font-mono px-1 py-0.5 rounded border font-bold ${
-                            agent.provider === 'gemini'
+                            agent.provider === 'groq'
                               ? 'bg-violet-500/20 text-violet-300 border-violet-500/40'
                               : agent.provider === 'deepseek'
                               ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40'
+                              : agent.provider === 'gemini'
+                              ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
                               : 'bg-zinc-500/20 text-zinc-300 border-zinc-500/40'
                           }`}
                         >
-                          {agent.provider === 'gemini' ? 'Gemini' : agent.provider === 'deepseek' ? 'DeepSeek' : 'Local'}
+                          {agent.provider === 'groq' ? 'Groq' : agent.provider === 'deepseek' ? 'DeepSeek' : agent.provider === 'gemini' ? 'Gemini' : 'Local'}
                         </span>
                       )}
                     </div>

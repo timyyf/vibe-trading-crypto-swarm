@@ -9,7 +9,7 @@ This application implements an institutional-grade multi-agent quantitative comm
 
 To solve high-latency bottlenecks while retaining ultra-high analytical precision:
 
-1. **Sub-Second LLM Engine**: Powered by `gemini-3.5-flash` (padrão; cadeia de fallback: `gemini-3.1-flash-lite` → `gemini-3.7-flash`, sobrescrevível por `GEMINI_MODEL`) configured with structured JSON outputs (`responseMimeType: 'application/json'`).
+1. **Sub-Second LLM Engine**: Powered by `Groq` (`openai/gpt-oss-120b` padrão; alternativas `llama-3.3-70b-versatile`, sobrescrevível por `GROQ_MODEL`) + `DeepSeek` (`deepseek-v4-flash`) rodando em **PARALELO** no modo híbrido (Groq cobre technical/sentiment/orderbook; DeepSeek cobre whales/alpha/risk). Gemini entra como **fallback terciário** quando ambos falham ou não estão configurados. Todos com structured JSON outputs.
 2. **Asynchronous Parallel Data Pipeline**: Real-time orderbook, candle metrics (EMA20, SMA50, RSI 14), and on-chain sentiment are aggregated concurrently prior to model synthesis.
 3. **Non-Blocking UI Stepper**: Front-end step feedback runs on a synchronized 180ms tick rate for instantaneous user responsiveness.
 
@@ -46,4 +46,4 @@ Each agent in the committee holds a dedicated quantitative role:
 ---
 
 ## 🛠️ Verification & Compilation
-Built and tested with Vite, Express, and Google Gemini API integration.
+Built and tested with Vite, Express, and Groq + DeepSeek (OpenAI-compatible) API integration, com Gemini como fallback terciário.

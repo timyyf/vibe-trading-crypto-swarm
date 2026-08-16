@@ -3,8 +3,9 @@ import { AgentReport, TradeDecision } from '../types';
 export type AgentAgentId = 'technical' | 'sentiment' | 'orderbook' | 'whales' | 'alpha' | 'risk';
 
 export const ALL_AGENT_IDS: AgentAgentId[] = ['technical', 'sentiment', 'orderbook', 'whales', 'alpha', 'risk'];
-export const GEMINI_AGENT_IDS: AgentAgentId[] = ['technical', 'sentiment', 'orderbook'];
+export const GROQ_AGENT_IDS: AgentAgentId[] = ['technical', 'sentiment', 'orderbook'];
 export const DEEPSEEK_AGENT_IDS: AgentAgentId[] = ['whales', 'alpha', 'risk'];
+export const GEMINI_AGENT_IDS: AgentAgentId[] = ['technical', 'sentiment', 'orderbook'];
 
 export interface CommitteeAgentMeta {
   agentId: AgentAgentId;
@@ -246,7 +247,7 @@ IMPORTANTE:
 }
 
 // Normaliza um agente cru (saída de LLM) em uma AgentReport completa.
-export function normalizeAgent(raw: any, provider: 'gemini' | 'deepseek' | 'local', allowedIds: AgentAgentId[], idx: number): AgentReport {
+export function normalizeAgent(raw: any, provider: 'groq' | 'deepseek' | 'gemini' | 'local', allowedIds: AgentAgentId[], idx: number): AgentReport {
   const id = (allowedIds.includes(raw?.agentId) ? raw.agentId : allowedIds[idx % allowedIds.length]) as AgentAgentId;
   const meta: CommitteeAgentMeta = {
     agentId: id,
@@ -295,15 +296,16 @@ export function normalizeAgent(raw: any, provider: 'gemini' | 'deepseek' | 'loca
   };
 }
 
-export function normalizeAgents(rawAgents: any, provider: 'gemini' | 'deepseek' | 'local', allowedIds: AgentAgentId[]): AgentReport[] {
+export function normalizeAgents(rawAgents: any, provider: 'groq' | 'deepseek' | 'gemini' | 'local', allowedIds: AgentAgentId[]): AgentReport[] {
   if (!Array.isArray(rawAgents)) return [];
   return rawAgents.map((raw, idx) => normalizeAgent(raw, provider, allowedIds, idx));
 }
 
 // Reporte DEGRADADO honesto (provedor falhou) — mantém o voto com peso reduzido.
-export function degradedAgent(id: AgentAgentId, provider: 'gemini' | 'deepseek', reason?: string): AgentReport {
+export function degradedAgent(id: AgentAgentId, provider: 'groq' | 'deepseek' | 'gemini', reason?: string): AgentReport {
   const meta = AGENT_META[id];
-  const reasonText = reason ? ` ${reason}.` : ` provedor ${provider === 'gemini' ? 'Gemini' : 'DeepSeek'} não respondeu no prazo.`;
+  const providerLabel = provider === 'groq' ? 'Groq' : provider === 'gemini' ? 'Gemini' : 'DeepSeek';
+  const reasonText = reason ? ` ${reason}.` : ` provedor ${providerLabel} não respondeu no prazo.`;
   return {
     agentId: id,
     agentName: meta.agentName,

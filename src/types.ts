@@ -49,7 +49,7 @@ export interface AgentReport {
   signals: string[];
   processingTimeMs?: number;
   status?: 'ONLINE' | 'ANALISANDO' | 'CONCLUÍDO' | 'DEGRADADO';
-  provider?: 'gemini' | 'deepseek' | 'local';
+  provider?: 'groq' | 'deepseek' | 'gemini' | 'local';
   veto?: boolean;
   vetoReason?: string;
 }
@@ -152,7 +152,7 @@ export interface SwarmAnalysisResult {
   assetName: string;
   assetPrice: number;
   timestamp: number;
-  engineSource?: 'gemini' | 'deepseek' | 'hybrid' | 'fallback';
+  engineSource?: 'groq' | 'deepseek' | 'gemini' | 'hybrid' | 'fallback';
   finalDecision: TradeDecision;
   mirofishReview?: MiroFishReview;
   confidenceScore: number;
@@ -200,7 +200,7 @@ export interface TradeJournalEntry {
   notes: string;
 }
 
-export type AgentComponentId = 'market_feed' | 'gemini_llm' | 'deepseek_llm' | 'technical' | 'sentiment' | 'orderbook' | 'whales' | 'alpha' | 'risk' | 'semantica_kg' | 'bitcoin_whales' | 'defillama';
+export type AgentComponentId = 'market_feed' | 'groq_llm' | 'deepseek_llm' | 'gemini_llm' | 'technical' | 'sentiment' | 'orderbook' | 'whales' | 'alpha' | 'risk' | 'semantica_kg' | 'bitcoin_whales' | 'defillama';
 
 export interface AgentDiagnostic {
   id: AgentComponentId;
